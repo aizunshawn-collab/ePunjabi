@@ -1,0 +1,282 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Microphone Test</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 600px;
+            margin: 50px auto;
+            padding: 20px;
+        }
+        button {
+            padding: 15px 30px;
+            font-size: 18px;
+            margin: 10px;
+            cursor: pointer;
+        }
+        #status {
+            padding: 20px;
+            margin: 20px 0;
+            background: #e3f2fd;
+            border-radius: 8px;
+            min-height: 50px;
+        }
+        #log {
+            background: #f5f5f5;
+            padding: 15px;
+            border-radius: 8px;
+            font-family: monospace;
+            font-size: 12px;
+            max-height: 300px;
+            overflow-y: auto;
+            white-space: pre-wrap;
+        }
+        .error {
+            background: #ffebee;
+            color: #c62828;
+            padding: 15px;
+            border-radius: 8px;
+            margin: 20px 0;
+        }
+    </style>
+</head>
+<body>
+    <h1>🎤 Microphone Test</h1>
+    
+    <div id="status">Click a button to test...</div>
+    
+    <button onclick="testGetUserMedia()">Test 1: getUserMedia</button>
+    <button onclick="testMediaRecorder()">Test 2: MediaRecorder</button>
+    <button onclick="testGoogleSpeechAPI()">Test 3: Google Speech API</button>
+    
+    <h3>📋 Log:</h3>
+    <div id="log"></div>
+    
+    <script>
+        const API_KEY = 'AIzaSyBvq4sD8FsJkhDATyHk0pCQJsT_cy35xVc';
+        let stream = null;
+        let recorder = null;
+        let chunks = [];
+        
+        function log(message) {
+            const timestamp = new Date().toLocaleTimeString();
+            const logDiv = document.getElementById('log');
+            logDiv.innerHTML += `[${timestamp}] ${message}\n`;
+            logDiv.scrollTop = logDiv.scrollHeight;
+            console.log(message);
+        }
+        
+        function setStatus(message) {
+            document.getElementById('status').innerHTML = message;
+        }
+        
+        // Test 1: Check if getUserMedia works
+        async function testGetUserMedia() {
+            log('=== TEST 1: getUserMedia ===');
+            setStatus('🔄 Testing microphone access...');
+            
+            try {
+                // Check browser support
+                if (!navigator.mediaDevices) {
+                    throw new Error('navigator.mediaDevices not available');
+                }
+                
+                if (!navigator.mediaDevices.getUserMedia) {
+                    throw new Error('getUserMedia not available');
+                }
+                
+                log('✅ getUserMedia API is available');
+                log('📞 Requesting microphone permission...');
+                
+                stream = await navigator.mediaDevices.getUserMedia({ 
+                    audio: {
+                        channelCount: 1,
+                        sampleRate: 48000,
+                        echoCancellation: true,
+                        noiseSuppression: true
+                    }
+                });
+                
+                log('✅ SUCCESS! Microphone access granted');
+                log('📊 Stream details: ' + stream.getTracks().length + ' tracks');
+                setStatus('✅ Microphone is working! You can use voice input.');
+                
+                // Stop the stream
+                stream.getTracks().forEach(track => {
+                    log('   - Track: ' + track.kind + ', enabled: ' + track.enabled);
+                    track.stop();
+                });
+                
+            } catch (error) {
+                log('❌ ERROR: ' + error.name + ' - ' + error.message);
+                setStatus('❌ Microphone test FAILED: ' + error.message);
+                
+                if (error.name === 'NotAllowedError') {
+                    log('💡 TIP: You need to allow microphone permission in browser');
+                } else if (error.name === 'NotFoundError') {
+                    log('💡 TIP: No microphone detected. Check your device settings');
+                }
+            }
+        }
+        
+        // Test 2: Check if MediaRecorder works
+        async function testMediaRecorder() {
+            log('=== TEST 2: MediaRecorder ===');
+            setStatus('🔄 Testing audio recording...');
+            
+            try {
+                if (typeof MediaRecorder === 'undefined') {
+                    throw new Error('MediaRecorder not supported in this browser');
+                }
+                
+                log('✅ MediaRecorder API is available');
+                
+                // Get microphone first
+                log('📞 Requesting microphone...');
+                stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                log('✅ Microphone granted');
+                
+                // Create recorder
+                log('📼 Creating MediaRecorder...');
+                recorder = new MediaRecorder(stream, { mimeType: 'audio/webm' });
+                log('✅ MediaRecorder created successfully');
+                
+                chunks = [];
+                recorder.ondataavailable = (e) => {
+                    if (e.data.size > 0) {
+                        chunks.push(e.data);
+                        log('📦 Recorded chunk: ' + e.data.size + ' bytes');
+                    }
+                };
+                
+                recorder.onstop = () => {
+                    const blob = new Blob(chunks, { type: 'audio/webm' });
+                    log('✅ Recording stopped. Total size: ' + blob.size + ' bytes');
+                    setStatus('✅ Recording works! Recorded ' + blob.size + ' bytes');
+                    
+                    // Clean up
+                    stream.getTracks().forEach(track => track.stop());
+                };
+                
+                // Record for 2 seconds
+                log('🎙️ Recording for 2 seconds...');
+                recorder.start();
+                setStatus('🎙️ Recording... speak now!');
+                
+                setTimeout(() => {
+                    recorder.stop();
+                }, 2000);
+                
+            } catch (error) {
+                log('❌ ERROR: ' + error.name + ' - ' + error.message);
+                setStatus('❌ Recording test FAILED: ' + error.message);
+            }
+        }
+        
+        // Test 3: Test Google Cloud Speech API
+        async function testGoogleSpeechAPI() {
+            log('=== TEST 3: Google Cloud Speech API ===');
+            setStatus('🔄 Testing Google Speech API...');
+            
+            try {
+                log('📞 Requesting microphone...');
+                stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                log('✅ Microphone granted');
+                
+                log('📼 Starting recording for 3 seconds...');
+                recorder = new MediaRecorder(stream, { mimeType: 'audio/webm' });
+                chunks = [];
+                
+                recorder.ondataavailable = (e) => {
+                    if (e.data.size > 0) chunks.push(e.data);
+                };
+                
+                recorder.onstop = async () => {
+                    const audioBlob = new Blob(chunks, { type: 'audio/webm' });
+                    log('✅ Recording complete: ' + audioBlob.size + ' bytes');
+                    
+                    // Convert to base64
+                    log('🔄 Converting to base64...');
+                    const base64Audio = await blobToBase64(audioBlob);
+                    const audioContent = base64Audio.split(',')[1];
+                    log('✅ Converted to base64');
+                    
+                    // Send to Google Cloud Speech API
+                    log('🌐 Sending to Google Cloud Speech API...');
+                    setStatus('🌐 Sending to Google Cloud...');
+                    
+                    const response = await fetch(`https://speech.googleapis.com/v1/speech:recognize?key=${API_KEY}`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            config: {
+                                encoding: 'WEBM_OPUS',
+                                sampleRateHertz: 48000,
+                                alternativeLanguageCodes: ['pa-IN', 'en-US', 'hi-IN'],
+                                languageCode: 'en-US',
+                                enableAutomaticPunctuation: true
+                            },
+                            audio: { content: audioContent }
+                        })
+                    });
+                    
+                    if (!response.ok) {
+                        const errorData = await response.json();
+                        throw new Error('API Error: ' + JSON.stringify(errorData));
+                    }
+                    
+                    const data = await response.json();
+                    log('✅ API Response: ' + JSON.stringify(data, null, 2));
+                    
+                    if (data.results && data.results.length > 0) {
+                        const transcript = data.results[0].alternatives[0].transcript;
+                        const langCode = data.results[0].languageCode || 'en-US';
+                        log('✅ SUCCESS! Recognized: "' + transcript + '" (Language: ' + langCode + ')');
+                        setStatus('✅ SUCCESS! You said: "' + transcript + '"');
+                    } else {
+                        log('⚠️ No speech detected in audio');
+                        setStatus('⚠️ No speech detected. Try speaking louder.');
+                    }
+                    
+                    // Clean up
+                    stream.getTracks().forEach(track => track.stop());
+                };
+                
+                recorder.start();
+                setStatus('🎙️ Recording for 3 seconds... SPEAK NOW!');
+                
+                setTimeout(() => {
+                    recorder.stop();
+                }, 3000);
+                
+            } catch (error) {
+                log('❌ ERROR: ' + error.name + ' - ' + error.message);
+                setStatus('❌ API test FAILED: ' + error.message);
+                if (stream) stream.getTracks().forEach(track => track.stop());
+            }
+        }
+        
+        function blobToBase64(blob) {
+            return new Promise((resolve, reject) => {
+                const reader = new FileReader();
+                reader.onloadend = () => resolve(reader.result);
+                reader.onerror = reject;
+                reader.readAsDataURL(blob);
+            });
+        }
+        
+        // Log browser info on load
+        window.addEventListener('DOMContentLoaded', () => {
+            log('=== BROWSER CAPABILITIES ===');
+            log('Browser: ' + navigator.userAgent);
+            log('getUserMedia: ' + (navigator.mediaDevices && navigator.mediaDevices.getUserMedia ? 'YES ✅' : 'NO ❌'));
+            log('MediaRecorder: ' + (typeof MediaRecorder !== 'undefined' ? 'YES ✅' : 'NO ❌'));
+            log('');
+            log('Ready! Click a test button above.');
+        });
+    </script>
+</body>
+</html>

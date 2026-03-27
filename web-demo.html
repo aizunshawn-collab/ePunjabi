@@ -1,0 +1,654 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>English-Punjabi Translator</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 600px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 20px;
+            box-shadow: 0 20px 40px rgba(0,0,0,0.1);
+            overflow: hidden;
+        }
+
+        .header {
+            background: linear-gradient(135deg, #007AFF, #5856D6);
+            color: white;
+            text-align: center;
+            padding: 30px 20px;
+        }
+
+        .header h1 {
+            font-size: 24px;
+            margin-bottom: 10px;
+        }
+
+        .header p {
+            opacity: 0.9;
+            font-size: 16px;
+        }
+
+        .content {
+            padding: 30px;
+        }
+
+        .language-selector {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 30px;
+            padding: 15px;
+            background: #f8f9fa;
+            border-radius: 15px;
+        }
+
+        .language-label {
+            font-weight: 600;
+            color: #333;
+            font-size: 16px;
+        }
+
+        .swap-button {
+            background: #007AFF;
+            border: none;
+            color: white;
+            padding: 10px 15px;
+            border-radius: 10px;
+            font-size: 18px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+        }
+
+        .swap-button:hover {
+            background: #0056b3;
+            transform: scale(1.1);
+        }
+
+        .input-section, .output-section {
+            margin-bottom: 25px;
+        }
+
+        .input-area {
+            width: 100%;
+            min-height: 120px;
+            padding: 20px;
+            border: 2px solid #e9ecef;
+            border-radius: 15px;
+            font-size: 16px;
+            resize: vertical;
+            font-family: inherit;
+            transition: border-color 0.3s ease;
+        }
+
+        .input-area:focus {
+            outline: none;
+            border-color: #007AFF;
+        }
+
+        .output-area {
+            width: 100%;
+            min-height: 120px;
+            padding: 20px;
+            background: #f8f9fa;
+            border: 2px solid #e9ecef;
+            border-radius: 15px;
+            font-size: 16px;
+            color: #333;
+            white-space: pre-wrap;
+        }
+
+        .button-group {
+            display: flex;
+            gap: 15px;
+            margin-bottom: 25px;
+        }
+
+        .btn {
+            flex: 1;
+            padding: 15px;
+            border: none;
+            border-radius: 15px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s ease;
+        }
+
+        .btn-primary {
+            background: #007AFF;
+            color: white;
+        }
+
+        .btn-primary:hover {
+            background: #0056b3;
+        }
+
+        .btn-secondary {
+            background: #6c757d;
+            color: white;
+        }
+
+        .btn-secondary:hover {
+            background: #545b62;
+        }
+
+        .btn:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+        }
+
+        .loading {
+            display: none;
+            text-align: center;
+            color: #007AFF;
+            font-weight: 600;
+        }
+
+        .error {
+            background: #f8d7da;
+            color: #721c24;
+            padding: 15px;
+            border-radius: 10px;
+            margin: 15px 0;
+            display: none;
+        }
+
+        .success {
+            background: #d4edda;
+            color: #155724;
+            padding: 15px;
+            border-radius: 10px;
+            margin: 15px 0;
+            display: none;
+        }
+
+        .voice-controls {
+            display: flex;
+            gap: 10px;
+            margin: 10px 0;
+        }
+
+        .voice-btn {
+            background: #28a745;
+            border: none;
+            color: white;
+            padding: 10px 15px;
+            border-radius: 50%;
+            font-size: 16px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            min-width: 45px;
+            height: 45px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .voice-btn:hover {
+            background: #1e7e34;
+            transform: scale(1.1);
+        }
+
+        .voice-btn:active, .voice-btn.recording {
+            background: #dc3545;
+            animation: pulse 1s infinite;
+        }
+
+        .voice-btn:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        @keyframes pulse {
+            0% { transform: scale(1); }
+            50% { transform: scale(1.1); }
+            100% { transform: scale(1); }
+        }
+
+        .voice-status {
+            background: #e3f2fd;
+            color: #1976d2;
+            padding: 10px;
+            border-radius: 8px;
+            margin: 10px 0;
+            text-align: center;
+            display: none;
+        }
+
+        .language-section {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 10px;
+        }
+
+        .api-status {
+            text-align: center;
+            padding: 15px;
+            border-radius: 10px;
+            margin-bottom: 20px;
+            font-weight: 600;
+        }
+
+        .api-working {
+            background: #d4edda;
+            color: #155724;
+        }
+
+        .api-error {
+            background: #f8d7da;
+            color: #721c24;
+        }
+
+        @media (max-width: 480px) {
+            .container {
+                margin: 10px;
+                border-radius: 15px;
+            }
+            
+            .content {
+                padding: 20px;
+            }
+            
+            .language-selector {
+                flex-direction: column;
+                gap: 15px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🎤 English ⟷ Punjabi Voice Translator</h1>
+            <p>Powered by Google Translate API • Speech Recognition • Text-to-Speech</p>
+        </div>
+        
+        <div class="content">
+            <div class="api-status" id="apiStatus">
+                ✅ API Configuration: Working
+            </div>
+
+            <div class="language-selector">
+                <div class="language-section">
+                    <span class="language-label" id="sourceLabel">English</span>
+                    <div class="voice-controls">
+                        <button class="voice-btn" id="voiceInputBtn" onclick="startVoiceInput()" title="Speak in English">
+                            🎤
+                        </button>
+                        <button class="voice-btn" id="playInputBtn" onclick="playInputText()" title="Play input text">
+                            🔊
+                        </button>
+                    </div>
+                </div>
+                <button class="swap-button" id="swapBtn" onclick="swapLanguages()">⇄</button>
+                <div class="language-section">
+                    <span class="language-label" id="targetLabel">Punjabi</span>
+                    <div class="voice-controls">
+                        <button class="voice-btn" id="playOutputBtn" onclick="playOutputText()" title="Play translated text">
+                            🔊
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <div class="input-section">
+                <textarea 
+                    class="input-area" 
+                    id="inputText"
+                    placeholder="Enter text to translate or click the microphone to speak..."
+                ></textarea>
+            </div>
+
+            <div class="voice-status" id="voiceStatus"></div>
+
+            <div class="button-group">
+                <button class="btn btn-primary" id="translateBtn" onclick="translateText()">
+                    Translate
+                </button>
+                <button class="btn btn-secondary" onclick="clearText()">
+                    Clear
+                </button>
+            </div>
+
+            <div class="loading" id="loading">
+                🔄 Translating...
+            </div>
+
+            <div class="error" id="error"></div>
+            <div class="success" id="success"></div>
+
+            <div class="output-section">
+                <div class="output-area" id="output">Translation will appear here...</div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Configuration
+        const API_KEY = 'AIzaSyBvq4sD8FsJkhDATyHk0pCQJsT_cy35xVc';
+        const API_URL = 'https://translation.googleapis.com/language/translate/v2';
+        
+        // State
+        let sourceLanguage = 'en';
+        let targetLanguage = 'pa';
+
+        // Initialize
+        document.addEventListener('DOMContentLoaded', function() {
+            testAPIConnection();
+            initializeSpeechRecognition();
+            updateVoiceButtonTitles();
+        });
+
+        async function testAPIConnection() {
+            try {
+                const response = await fetch(`${API_URL}/languages?key=${API_KEY}&target=en`);
+                if (response.ok) {
+                    document.getElementById('apiStatus').innerHTML = '✅ API Configuration: Working';
+                    document.getElementById('apiStatus').className = 'api-status api-working';
+                } else {
+                    throw new Error('API connection failed');
+                }
+            } catch (error) {
+                document.getElementById('apiStatus').innerHTML = '❌ API Configuration: Error';
+                document.getElementById('apiStatus').className = 'api-status api-error';
+                showError('API connection failed. Please check your internet connection.');
+            }
+        }
+
+        function swapLanguages() {
+            // Swap language codes
+            [sourceLanguage, targetLanguage] = [targetLanguage, sourceLanguage];
+            
+            // Update labels
+            const sourceLabel = document.getElementById('sourceLabel');
+            const targetLabel = document.getElementById('targetLabel');
+            [sourceLabel.textContent, targetLabel.textContent] = [targetLabel.textContent, sourceLabel.textContent];
+            
+            // Swap input and output
+            const inputText = document.getElementById('inputText').value;
+            const outputText = document.getElementById('output').textContent;
+            
+            if (outputText !== 'Translation will appear here...') {
+                document.getElementById('inputText').value = outputText;
+                document.getElementById('output').textContent = inputText || 'Translation will appear here...';
+            }
+        }
+
+        async function translateText() {
+            const input = document.getElementById('inputText').value.trim();
+            
+            if (!input) {
+                showError('Please enter text to translate');
+                return;
+            }
+
+            setLoading(true);
+            hideMessages();
+
+            try {
+                const response = await fetch(`${API_URL}?key=${API_KEY}`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        q: input,
+                        source: sourceLanguage,
+                        target: targetLanguage,
+                        format: 'text'
+                    })
+                });
+
+                const data = await response.json();
+
+                if (response.ok && data.data && data.data.translations) {
+                    const translatedText = data.data.translations[0].translatedText;
+                    document.getElementById('output').textContent = translatedText;
+                    showSuccess('Translation completed successfully!');
+                } else {
+                    throw new Error(data.error ? data.error.message : 'Translation failed');
+                }
+            } catch (error) {
+                showError(`Translation failed: ${error.message}`);
+                console.error('Translation error:', error);
+            } finally {
+                setLoading(false);
+            }
+        }
+
+        function clearText() {
+            document.getElementById('inputText').value = '';
+            document.getElementById('output').textContent = 'Translation will appear here...';
+            hideMessages();
+        }
+
+        function setLoading(loading) {
+            const loadingEl = document.getElementById('loading');
+            const translateBtn = document.getElementById('translateBtn');
+            
+            if (loading) {
+                loadingEl.style.display = 'block';
+                translateBtn.disabled = true;
+                translateBtn.textContent = 'Translating...';
+            } else {
+                loadingEl.style.display = 'none';
+                translateBtn.disabled = false;
+                translateBtn.textContent = 'Translate';
+            }
+        }
+
+        function showError(message) {
+            const errorEl = document.getElementById('error');
+            errorEl.textContent = message;
+            errorEl.style.display = 'block';
+        }
+
+        function showSuccess(message) {
+            const successEl = document.getElementById('success');
+            successEl.textContent = message;
+            successEl.style.display = 'block';
+            setTimeout(() => successEl.style.display = 'none', 3000);
+        }
+
+        function hideMessages() {
+            document.getElementById('error').style.display = 'none';
+            document.getElementById('success').style.display = 'none';
+        }
+
+        // Allow Enter key to translate
+        document.getElementById('inputText').addEventListener('keydown', function(e) {
+            if (e.key === 'Enter' && e.ctrlKey) {
+                translateText();
+            }
+        });
+
+        // Voice Recognition
+        let recognition = null;
+        let isRecording = false;
+
+        function initializeSpeechRecognition() {
+            if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
+                const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+                recognition = new SpeechRecognition();
+                
+                recognition.continuous = false;
+                recognition.interimResults = true;
+                recognition.maxAlternatives = 1;
+                
+                recognition.onstart = function() {
+                    isRecording = true;
+                    updateVoiceStatus('🎤 Listening... Speak now!');
+                    document.getElementById('voiceInputBtn').classList.add('recording');
+                };
+                
+                recognition.onresult = function(event) {
+                    let finalTranscript = '';
+                    let interimTranscript = '';
+                    
+                    for (let i = event.resultIndex; i < event.results.length; i++) {
+                        const transcript = event.results[i][0].transcript;
+                        if (event.results[i].isFinal) {
+                            finalTranscript += transcript;
+                        } else {
+                            interimTranscript += transcript;
+                        }
+                    }
+                    
+                    if (finalTranscript) {
+                        document.getElementById('inputText').value = finalTranscript;
+                        updateVoiceStatus('✅ Speech captured successfully!');
+                        setTimeout(() => hideVoiceStatus(), 2000);
+                        // Auto-translate after capturing speech
+                        setTimeout(() => translateText(), 500);
+                    } else if (interimTranscript) {
+                        updateVoiceStatus(`🎤 Hearing: "${interimTranscript}"`);
+                    }
+                };
+                
+                recognition.onerror = function(event) {
+                    updateVoiceStatus(`❌ Speech recognition error: ${event.error}`);
+                    setTimeout(() => hideVoiceStatus(), 3000);
+                    stopRecording();
+                };
+                
+                recognition.onend = function() {
+                    stopRecording();
+                };
+                
+                return true;
+            } else {
+                updateVoiceStatus('❌ Speech recognition not supported in this browser. Try Chrome or Edge.');
+                setTimeout(() => hideVoiceStatus(), 5000);
+                return false;
+            }
+        }
+
+        function startVoiceInput() {
+            if (!recognition && !initializeSpeechRecognition()) {
+                return;
+            }
+            
+            if (isRecording) {
+                recognition.stop();
+                return;
+            }
+            
+            // Set language for recognition
+            recognition.lang = sourceLanguage === 'en' ? 'en-US' : 'pa-IN';
+            
+            try {
+                recognition.start();
+            } catch (error) {
+                updateVoiceStatus('❌ Could not start voice recognition. Please try again.');
+                setTimeout(() => hideVoiceStatus(), 3000);
+            }
+        }
+
+        function stopRecording() {
+            isRecording = false;
+            document.getElementById('voiceInputBtn').classList.remove('recording');
+        }
+
+        function updateVoiceStatus(message) {
+            const voiceStatus = document.getElementById('voiceStatus');
+            voiceStatus.textContent = message;
+            voiceStatus.style.display = 'block';
+        }
+
+        function hideVoiceStatus() {
+            document.getElementById('voiceStatus').style.display = 'none';
+        }
+
+        // Text-to-Speech
+        function playInputText() {
+            const text = document.getElementById('inputText').value.trim();
+            if (!text) {
+                updateVoiceStatus('❌ No text to speak. Please enter some text first.');
+                setTimeout(() => hideVoiceStatus(), 2000);
+                return;
+            }
+            
+            speakText(text, sourceLanguage, 'input text');
+        }
+
+        function playOutputText() {
+            const text = document.getElementById('output').textContent;
+            if (!text || text === 'Translation will appear here...') {
+                updateVoiceStatus('❌ No translation to speak. Please translate some text first.');
+                setTimeout(() => hideVoiceStatus(), 2000);
+                return;
+            }
+            
+            speakText(text, targetLanguage, 'translation');
+        }
+
+        function speakText(text, language, type) {
+            if ('speechSynthesis' in window) {
+                // Stop any ongoing speech
+                speechSynthesis.cancel();
+                
+                const utterance = new SpeechSynthesisUtterance(text);
+                
+                // Set language
+                utterance.lang = language === 'en' ? 'en-US' : 'pa-IN';
+                
+                // Set voice properties
+                utterance.rate = 0.8;
+                utterance.pitch = 1;
+                utterance.volume = 1;
+                
+                utterance.onstart = function() {
+                    updateVoiceStatus(`🔊 Speaking ${type}...`);
+                };
+                
+                utterance.onend = function() {
+                    updateVoiceStatus(`✅ Finished speaking ${type}`);
+                    setTimeout(() => hideVoiceStatus(), 2000);
+                };
+                
+                utterance.onerror = function(event) {
+                    updateVoiceStatus(`❌ Speech error: ${event.error}`);
+                    setTimeout(() => hideVoiceStatus(), 3000);
+                };
+                
+                speechSynthesis.speak(utterance);
+            } else {
+                updateVoiceStatus('❌ Text-to-speech not supported in this browser.');
+                setTimeout(() => hideVoiceStatus(), 3000);
+            }
+        }
+
+        // Update voice button titles when languages swap
+        function updateVoiceButtonTitles() {
+            const voiceInputBtn = document.getElementById('voiceInputBtn');
+            const sourceLabel = document.getElementById('sourceLabel').textContent;
+            voiceInputBtn.title = `Speak in ${sourceLabel}`;
+        }
+
+        // Override swapLanguages to update voice button titles
+        const originalSwapLanguages = swapLanguages;
+        swapLanguages = function() {
+            originalSwapLanguages();
+            updateVoiceButtonTitles();
+        };
+    </script>
+</body>
+</html>

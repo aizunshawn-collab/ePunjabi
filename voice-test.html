@@ -1,0 +1,252 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Voice Test</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 600px;
+            margin: 50px auto;
+            padding: 20px;
+        }
+        button {
+            padding: 15px 30px;
+            margin: 10px;
+            font-size: 16px;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+        }
+        .voice-btn {
+            background: #28a745;
+            color: white;
+        }
+        .voice-btn:hover {
+            background: #1e7e34;
+        }
+        .voice-btn.recording {
+            background: #dc3545;
+            animation: pulse 1s infinite;
+        }
+        @keyframes pulse {
+            0% { transform: scale(1); }
+            50% { transform: scale(1.05); }
+            100% { transform: scale(1); }
+        }
+        .status {
+            padding: 15px;
+            margin: 10px 0;
+            border-radius: 5px;
+            background: #e3f2fd;
+            color: #1976d2;
+        }
+        .error {
+            background: #ffebee;
+            color: #c62828;
+        }
+        textarea {
+            width: 100%;
+            height: 100px;
+            padding: 10px;
+            margin: 10px 0;
+            border: 1px solid #ccc;
+            border-radius: 5px;
+        }
+    </style>
+</head>
+<body>
+    <h1>🎤 Voice Translation Test</h1>
+    
+    <div id="status" class="status">Ready to test voice features...</div>
+    
+    <h3>Speech Recognition Test:</h3>
+    <button id="voiceBtn" class="voice-btn" onclick="toggleVoiceRecognition()">
+        🎤 Start Voice Recognition
+    </button>
+    
+    <textarea id="speechResult" placeholder="Speech recognition results will appear here..."></textarea>
+    
+    <h3>Text-to-Speech Test:</h3>
+    <textarea id="textToSpeak" placeholder="Enter text to speak...">Hello, this is a test of text-to-speech functionality.</textarea>
+    
+    <button class="voice-btn" onclick="speakText()">
+        🔊 Speak Text
+    </button>
+    
+    <h3>Translation Test:</h3>
+    <button class="voice-btn" onclick="testTranslation()">
+        🔄 Test Translation API
+    </button>
+    
+    <textarea id="translationResult" placeholder="Translation results will appear here..."></textarea>
+
+    <script>
+        let recognition = null;
+        let isListening = false;
+        
+        function updateStatus(message, isError = false) {
+            const statusEl = document.getElementById('status');
+            statusEl.textContent = message;
+            statusEl.className = isError ? 'status error' : 'status';
+        }
+        
+        function initializeSpeechRecognition() {
+            if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
+                const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+                recognition = new SpeechRecognition();
+                
+                recognition.continuous = false;
+                recognition.interimResults = true;
+                recognition.maxAlternatives = 1;
+                recognition.lang = 'en-US';
+                
+                recognition.onstart = function() {
+                    isListening = true;
+                    updateStatus('🎤 Listening... Speak now!');
+                    document.getElementById('voiceBtn').classList.add('recording');
+                    document.getElementById('voiceBtn').textContent = '🛑 Stop Recording';
+                };
+                
+                recognition.onresult = function(event) {
+                    let finalTranscript = '';
+                    let interimTranscript = '';
+                    
+                    for (let i = event.resultIndex; i < event.results.length; i++) {
+                        const transcript = event.results[i][0].transcript;
+                        if (event.results[i].isFinal) {
+                            finalTranscript += transcript;
+                        } else {
+                            interimTranscript += transcript;
+                        }
+                    }
+                    
+                    if (finalTranscript) {
+                        document.getElementById('speechResult').value = finalTranscript;
+                        updateStatus('✅ Speech captured: "' + finalTranscript + '"');
+                    } else if (interimTranscript) {
+                        updateStatus('🎤 Hearing: "' + interimTranscript + '"');
+                    }
+                };
+                
+                recognition.onerror = function(event) {
+                    updateStatus('❌ Speech recognition error: ' + event.error, true);
+                    stopRecording();
+                };
+                
+                recognition.onend = function() {
+                    stopRecording();
+                };
+                
+                updateStatus('✅ Speech recognition initialized and ready!');
+                return true;
+            } else {
+                updateStatus('❌ Speech recognition not supported in this browser. Try Chrome or Edge.', true);
+                return false;
+            }
+        }
+        
+        function toggleVoiceRecognition() {
+            if (!recognition) {
+                if (!initializeSpeechRecognition()) {
+                    return;
+                }
+            }
+            
+            if (isListening) {
+                recognition.stop();
+            } else {
+                try {
+                    recognition.start();
+                } catch (error) {
+                    updateStatus('❌ Could not start voice recognition: ' + error.message, true);
+                }
+            }
+        }
+        
+        function stopRecording() {
+            isListening = false;
+            document.getElementById('voiceBtn').classList.remove('recording');
+            document.getElementById('voiceBtn').textContent = '🎤 Start Voice Recognition';
+        }
+        
+        function speakText() {
+            const text = document.getElementById('textToSpeak').value.trim();
+            if (!text) {
+                updateStatus('❌ No text to speak. Please enter some text.', true);
+                return;
+            }
+            
+            if ('speechSynthesis' in window) {
+                speechSynthesis.cancel(); // Stop any ongoing speech
+                
+                const utterance = new SpeechSynthesisUtterance(text);
+                utterance.lang = 'en-US';
+                utterance.rate = 0.8;
+                utterance.pitch = 1;
+                utterance.volume = 1;
+                
+                utterance.onstart = function() {
+                    updateStatus('🔊 Speaking text...');
+                };
+                
+                utterance.onend = function() {
+                    updateStatus('✅ Finished speaking text');
+                };
+                
+                utterance.onerror = function(event) {
+                    updateStatus('❌ Speech error: ' + event.error, true);
+                };
+                
+                speechSynthesis.speak(utterance);
+            } else {
+                updateStatus('❌ Text-to-speech not supported in this browser.', true);
+            }
+        }
+        
+        async function testTranslation() {
+            const API_KEY = 'AIzaSyBvq4sD8FsJkhDATyHk0pCQJsT_cy35xVc';
+            const API_URL = 'https://translation.googleapis.com/language/translate/v2';
+            const testText = 'Hello, how are you?';
+            
+            updateStatus('🔄 Testing translation API...');
+            
+            try {
+                const response = await fetch(`${API_URL}?key=${API_KEY}`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        q: testText,
+                        source: 'en',
+                        target: 'pa',
+                        format: 'text'
+                    })
+                });
+
+                const data = await response.json();
+
+                if (response.ok && data.data && data.data.translations) {
+                    const translatedText = data.data.translations[0].translatedText;
+                    document.getElementById('translationResult').value = 
+                        `Original: ${testText}\nTranslated: ${translatedText}`;
+                    updateStatus('✅ Translation API working! English → Punjabi successful');
+                } else {
+                    throw new Error(data.error ? data.error.message : 'Translation failed');
+                }
+            } catch (error) {
+                updateStatus('❌ Translation API error: ' + error.message, true);
+                document.getElementById('translationResult').value = 'Translation failed: ' + error.message;
+            }
+        }
+        
+        // Initialize on page load
+        document.addEventListener('DOMContentLoaded', function() {
+            updateStatus('🚀 Voice test page loaded. Click buttons to test features.');
+            initializeSpeechRecognition();
+        });
+    </script>
+</body>
+</html>
