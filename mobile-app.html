@@ -1719,6 +1719,8 @@
             const errorDiv = document.getElementById('errorDiv');
             errorDiv.textContent = `❌ ${message}`;
             errorDiv.style.display = 'block';
+            errorDiv.scrollIntoView({ behavior: 'smooth' });
+            alert('❌ ' + message);
         }
 
         function hideError() {
