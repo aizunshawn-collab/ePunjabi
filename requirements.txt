@@ -1,0 +1,12 @@
+flask
+flask-cors
+transformers
+torch
+openai-whisper
+sentencepiece
+protobuf
+IndicTransToolkit
+indic_transliteration
+sacrebleu
+pytesseract
+pillow

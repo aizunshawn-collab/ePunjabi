@@ -1,0 +1,11 @@
+.git
+node_modules
+android
+PunjabiVoiceApp
+src
+*.md
+*.html
+*.hprof
+__pycache__
+*.pyc
+.vscode
