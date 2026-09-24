@@ -2,7 +2,9 @@
 # (e.g. Fly.io GPU machines). Uses an official CUDA-enabled PyTorch base image
 # instead of a plain python:slim image, since the local dev venv's CPU-only
 # torch build won't use a cloud GPU even if one is attached.
-FROM pytorch/pytorch:2.4.0-cuda12.1-cudnn9-runtime
+# Pinned to 2.5+ because requirements.txt installs an unpinned (latest)
+# transformers, which refuses to enable its PyTorch backend below 2.5.
+FROM pytorch/pytorch:2.5.1-cuda12.1-cudnn9-runtime
 
 # Unbuffered stdout so startup/model-load prints reach container logs in
 # real time instead of sitting in a buffer until the process exits.
