@@ -1,6 +1,12 @@
 flask
 flask-cors
-transformers
+# Pinned below 4.36 (the Cache-API refactor): IndicTrans2's vendored
+# trust_remote_code tokenizer/model files predate that refactor and break on
+# newer transformers (e.g. "IndicTransTokenizer has no attribute
+# _special_tokens_map", tie_weights() signature mismatch, EncoderDecoderCache
+# not subscriptable). See https://huggingface.co/ai4bharat/indictrans2-en-indic-1B/discussions/18
+transformers==4.35.2
+tokenizers<0.19
 torch
 openai-whisper
 sentencepiece
