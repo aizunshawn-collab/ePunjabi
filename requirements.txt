@@ -1,12 +1,15 @@
 flask
 flask-cors
-# Pinned below 4.36 (the Cache-API refactor): IndicTrans2's vendored
-# trust_remote_code tokenizer/model files predate that refactor and break on
-# newer transformers (e.g. "IndicTransTokenizer has no attribute
+# IndicTrans2's vendored trust_remote_code tokenizer/model files need a
+# transformers version in a narrow sweet spot: too new (5.x, or even 4.57.x)
+# breaks tokenizer internals ("IndicTransTokenizer has no attribute
 # _special_tokens_map", tie_weights() signature mismatch, EncoderDecoderCache
-# not subscriptable). See https://huggingface.co/ai4bharat/indictrans2-en-indic-1B/discussions/18
-transformers==4.35.2
-tokenizers<0.19
+# not subscriptable - see https://huggingface.co/ai4bharat/indictrans2-en-indic-1B/discussions/18);
+# too old (4.35.2) is missing _prepare_4d_attention_mask_for_sdpa in
+# transformers.modeling_attn_mask_utils (confirmed via a real CI build
+# failure). 4.44.2 is the actual known-good version, confirmed via a full
+# successful model load + live /translate requests.
+transformers==4.44.2
 torch
 openai-whisper
 sentencepiece
