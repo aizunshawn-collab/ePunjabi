@@ -30,8 +30,9 @@ RUN grep -v '^torch' requirements.txt > requirements.docker.txt \
 COPY ai_backend_server.py indictrans_processor.py supervisord.conf watchdog.sh ./
 # Fine-tuned Punjabi Whisper checkpoint (see finetune_whisper_punjabi.py) -
 # without this, the app silently falls back to only the generic Whisper
-# model for Punjabi audio too.
-COPY models/whisper-punjabi-final ./models/whisper-punjabi-final
+# model for Punjabi audio too. Pulled from HF Hub (not COPYed from the repo)
+# since the checkpoint is 922MB - over GitHub's 100MB push limit.
+RUN python -c "from huggingface_hub import snapshot_download; snapshot_download(repo_id='Pro-Developer/whisper-punjabi-finetuned', local_dir='models/whisper-punjabi-final')"
 RUN chmod +x watchdog.sh
 
 # Pre-download/load every model at build time by importing the app module
