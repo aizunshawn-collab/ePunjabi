@@ -44,6 +44,11 @@ jobs:
         with:
           context: .
           push: true
+          # IndicTrans2's 2 HF repos are gated - the Dockerfile's model-
+          # prefetch steps need this to authenticate (repo secret, not a
+          # build ARG, so it never lands in an image layer/history).
+          secrets: |
+            hf_token=${{ secrets.HF_TOKEN }}
           tags: |
             ghcr.io/${{ github.repository_owner }}/epunjabi-backend:latest
             ghcr.io/${{ github.repository_owner }}/epunjabi-backend:sha-${{ github.sha }}

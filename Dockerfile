@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1
 # Container image for ai_backend_server.py, built for GPU-backed cloud hosting
 # (e.g. Fly.io GPU machines). Uses an official CUDA-enabled PyTorch base image
 # instead of a plain python:slim image, since the local dev venv's CPU-only
@@ -31,8 +32,11 @@ COPY ai_backend_server.py indictrans_processor.py supervisord.conf watchdog.sh .
 # Fine-tuned Punjabi Whisper checkpoint (see finetune_whisper_punjabi.py) -
 # without this, the app silently falls back to only the generic Whisper
 # model for Punjabi audio too. Pulled from HF Hub (not COPYed from the repo)
-# since the checkpoint is 922MB - over GitHub's 100MB push limit.
-RUN python -c "from huggingface_hub import snapshot_download; snapshot_download(repo_id='Pro-Developer/whisper-punjabi-finetuned', local_dir='models/whisper-punjabi-final')"
+# since the checkpoint is 922MB - over GitHub's 100MB push limit. Uses the
+# same hf_token build secret as the step below (this repo is public, but the
+# token doesn't hurt and keeps both prefetch steps consistent).
+RUN --mount=type=secret,id=hf_token \
+    HF_TOKEN=$(cat /run/secrets/hf_token) python -c "from huggingface_hub import snapshot_download; snapshot_download(repo_id='Pro-Developer/whisper-punjabi-finetuned', local_dir='models/whisper-punjabi-final')"
 RUN chmod +x watchdog.sh
 
 # Pre-download/load every model at build time by importing the app module
@@ -43,7 +47,11 @@ RUN chmod +x watchdog.sh
 # that network download, not raw model-load time, is the dominant cold-start
 # cost for this app. No GPU is available at build time, so this just runs on
 # CPU long enough to populate the on-disk caches; it does not run inference.
-RUN python -c "import ai_backend_server"
+# IndicTrans2's 2 repos are GATED on HF Hub - this build secret must be set
+# (docker-publish.yml passes the HF_TOKEN repo secret in as "hf_token"),
+# otherwise this step 401s trying to download them.
+RUN --mount=type=secret,id=hf_token \
+    HF_TOKEN=$(cat /run/secrets/hf_token) python -c "import ai_backend_server"
 
 EXPOSE 8080
 
