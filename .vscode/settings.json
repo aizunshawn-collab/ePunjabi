@@ -1,0 +1,21 @@
+{
+  "python.defaultInterpreterPath": "C:\\pyenvs\\ep-voice-backend\\Scripts\\python.exe",
+  "java.errors.incompleteClasspath.severity": "ignore",
+  "java.import.gradle.enabled": true,
+  "java.import.gradle.wrapper.enabled": true,
+  "java.configuration.updateBuildConfiguration": "automatic",
+  "java.configuration.runtimes": [
+    {
+      "name": "JavaSE-17",
+      "path": "C:\\Users\\aizun\\AppData\\Local\\Programs\\Microsoft\\jdk-21.0.8.9-hotspot",
+      "default": true
+    }
+  ],
+  "java.jdt.ls.vmargs": "-Xmx2G -Xms512m",
+  "android.sdk.path": "C:\\Users\\aizun\\AppData\\Local\\Android\\Sdk",
+  "java.compile.nullAnalysis.mode": "automatic",
+  "java.import.exclusions": [
+    "**/.git",
+    "**/android/**"
+  ]
+}

@@ -1,0 +1,517 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Voice Translation - Fixed Version</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 20px auto;
+            padding: 20px;
+            background: #f5f5f5;
+        }
+        .container {
+            background: white;
+            padding: 30px;
+            border-radius: 10px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        h1 {
+            text-align: center;
+            color: #333;
+            margin-bottom: 30px;
+        }
+        .test-section {
+            border: 1px solid #ddd;
+            padding: 20px;
+            margin: 20px 0;
+            border-radius: 8px;
+            background: #fafafa;
+        }
+        button {
+            padding: 12px 24px;
+            margin: 8px;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 16px;
+            transition: all 0.3s ease;
+        }
+        .btn-primary { background: #007bff; color: white; }
+        .btn-primary:hover { background: #0056b3; }
+        .btn-success { background: #28a745; color: white; }
+        .btn-success:hover { background: #1e7e34; }
+        .btn-danger { background: #dc3545; color: white; }
+        .btn-danger:hover { background: #c82333; }
+        .result {
+            background: #f8f9fa;
+            padding: 15px;
+            margin: 15px 0;
+            border-radius: 6px;
+            white-space: pre-wrap;
+            font-family: monospace;
+            border-left: 4px solid #007bff;
+            font-size: 14px;
+        }
+        .success { 
+            background: #d4edda; 
+            color: #155724; 
+            border-left-color: #28a745;
+        }
+        .error { 
+            background: #f8d7da; 
+            color: #721c24; 
+            border-left-color: #dc3545;
+        }
+        input[type="text"] {
+            width: 100%;
+            padding: 12px;
+            margin: 10px 0;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            font-size: 16px;
+            box-sizing: border-box;
+        }
+        .recording {
+            background: #dc3545 !important;
+            animation: pulse 1.5s infinite;
+        }
+        @keyframes pulse {
+            0% { transform: scale(1); }
+            50% { transform: scale(1.05); }
+            100% { transform: scale(1); }
+        }
+        .status-indicator {
+            display: inline-block;
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            margin-right: 8px;
+        }
+        .status-online { background: #28a745; }
+        .status-offline { background: #dc3545; }
+        .status-loading { background: #ffc107; animation: pulse 1s infinite; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🎤 Voice Translation App - Debug & Test</h1>
+        
+        <div class="test-section">
+            <h3><span class="status-indicator" id="serverStatus"></span>1. Server Connection Test</h3>
+            <button class="btn-primary" onclick="testServerConnection()">Test Proxy Server</button>
+            <div id="serverResult" class="result">Click to test server connection...</div>
+        </div>
+        
+        <div class="test-section">
+            <h3><span class="status-indicator" id="apiStatus"></span>2. Translation API Test</h3>
+            <button class="btn-primary" onclick="testTranslationAPI()">Test Translation API</button>
+            <div id="apiResult" class="result">Click to test translation...</div>
+        </div>
+        
+        <div class="test-section">
+            <h3><span class="status-indicator" id="voiceStatus"></span>3. Voice Recognition Test</h3>
+            <button class="btn-success" id="speechBtn" onclick="toggleSpeechRecognition()">🎤 Start Voice Recognition</button>
+            <div id="speechResult" class="result">Click microphone to test speech recognition...</div>
+        </div>
+        
+        <div class="test-section">
+            <h3><span class="status-indicator" id="ttsStatus"></span>4. Text-to-Speech Test</h3>
+            <input type="text" id="testText" value="Hello, this is a test of text-to-speech" placeholder="Enter text to speak...">
+            <button class="btn-success" onclick="testTextToSpeech()">🔊 Speak Text</button>
+            <div id="ttsResult" class="result">Enter text above and click speak...</div>
+        </div>
+        
+        <div class="test-section">
+            <h3>🔄 5. Complete Voice Translation Test</h3>
+            <p>This combines all features: Voice → Text → Translation → Speech</p>
+            <button class="btn-primary" id="fullTestBtn" onclick="startFullVoiceTest()">🎯 Start Full Voice Translation</button>
+            <div id="fullTestResult" class="result">Click to test complete voice translation workflow...</div>
+        </div>
+    </div>
+
+    <script>
+        let recognition = null;
+        let isListening = false;
+        let speechSynthesisVoices = [];
+        
+        // Status indicators
+        function setStatus(elementId, status) {
+            const indicator = document.getElementById(elementId);
+            indicator.className = `status-indicator status-${status}`;
+        }
+
+        // Server connection test
+        async function testServerConnection() {
+            const resultDiv = document.getElementById('serverResult');
+            setStatus('serverStatus', 'loading');
+            resultDiv.textContent = 'Testing server connection...';
+            resultDiv.className = 'result';
+            
+            try {
+                const response = await fetch('/api/health');
+                const data = await response.json();
+                
+                if (response.ok) {
+                    setStatus('serverStatus', 'online');
+                    resultDiv.className = 'result success';
+                    resultDiv.textContent = `✅ Server Connected!\nStatus: ${data.status}\nMessage: ${data.message}`;
+                } else {
+                    throw new Error(`Server responded with status ${response.status}`);
+                }
+            } catch (error) {
+                setStatus('serverStatus', 'offline');
+                resultDiv.className = 'result error';
+                resultDiv.textContent = `❌ Server Connection Failed!\nError: ${error.message}\n\nMake sure to run: node translation-server.js`;
+            }
+        }
+
+        // Translation API test
+        async function testTranslationAPI() {
+            const resultDiv = document.getElementById('apiResult');
+            setStatus('apiStatus', 'loading');
+            resultDiv.textContent = 'Testing translation API...';
+            resultDiv.className = 'result';
+            
+            try {
+                const testPayload = {
+                    q: 'Hello, how are you?',
+                    source: 'en',
+                    target: 'pa',
+                    format: 'text'
+                };
+                
+                const response = await fetch('/api/translate', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify(testPayload)
+                });
+                
+                const data = await response.json();
+                
+                if (response.ok && data.data && data.data.translations) {
+                    const translation = data.data.translations[0].translatedText;
+                    setStatus('apiStatus', 'online');
+                    resultDiv.className = 'result success';
+                    resultDiv.textContent = `✅ Translation API Working!\n\nOriginal (English): "Hello, how are you?"\nTranslated (Punjabi): "${translation}"\n\nAPI is fully functional!`;
+                } else {
+                    throw new Error(`Translation failed: ${JSON.stringify(data)}`);
+                }
+            } catch (error) {
+                setStatus('apiStatus', 'offline');
+                resultDiv.className = 'result error';
+                resultDiv.textContent = `❌ Translation API Failed!\nError: ${error.message}`;
+            }
+        }
+
+        // Speech recognition test
+        function toggleSpeechRecognition() {
+            if (isListening) {
+                stopSpeechRecognition();
+            } else {
+                startSpeechRecognition();
+            }
+        }
+        
+        function startSpeechRecognition() {
+            const resultDiv = document.getElementById('speechResult');
+            const button = document.getElementById('speechBtn');
+            
+            try {
+                const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+                
+                if (!SpeechRecognition) {
+                    throw new Error('Speech recognition not supported. Please use Chrome or Edge browser.');
+                }
+                
+                recognition = new SpeechRecognition();
+                recognition.continuous = false;
+                recognition.interimResults = true;
+                recognition.lang = 'en-US';
+                
+                recognition.onstart = function() {
+                    isListening = true;
+                    setStatus('voiceStatus', 'online');
+                    button.textContent = '🛑 Stop Recording';
+                    button.className = 'btn-danger recording';
+                    resultDiv.textContent = '🎤 Listening... Speak clearly!';
+                    resultDiv.className = 'result';
+                };
+                
+                recognition.onresult = function(event) {
+                    let finalTranscript = '';
+                    let interimTranscript = '';
+                    
+                    for (let i = event.resultIndex; i < event.results.length; i++) {
+                        const transcript = event.results[i][0].transcript;
+                        if (event.results[i].isFinal) {
+                            finalTranscript += transcript;
+                        } else {
+                            interimTranscript += transcript;
+                        }
+                    }
+                    
+                    if (finalTranscript) {
+                        resultDiv.className = 'result success';
+                        resultDiv.textContent = `✅ Speech Captured!\nFinal Text: "${finalTranscript}"\n\nSpeech recognition is working perfectly!`;
+                    } else if (interimTranscript) {
+                        resultDiv.textContent = `🎤 Hearing: "${interimTranscript}"\n(Keep speaking...)`;
+                    }
+                };
+                
+                recognition.onerror = function(event) {
+                    setStatus('voiceStatus', 'offline');
+                    resultDiv.className = 'result error';
+                    resultDiv.textContent = `❌ Speech Recognition Error!\nError: ${event.error}\n\nTry:\n1. Allow microphone access\n2. Use Chrome/Edge browser\n3. Speak clearly`;
+                    stopSpeechRecognition();
+                };
+                
+                recognition.onend = function() {
+                    stopSpeechRecognition();
+                };
+                
+                recognition.start();
+                
+            } catch (error) {
+                setStatus('voiceStatus', 'offline');
+                resultDiv.className = 'result error';
+                resultDiv.textContent = `❌ Speech Setup Error!\nError: ${error.message}`;
+            }
+        }
+        
+        function stopSpeechRecognition() {
+            isListening = false;
+            const button = document.getElementById('speechBtn');
+            button.textContent = '🎤 Start Voice Recognition';
+            button.className = 'btn-success';
+            
+            if (recognition) {
+                recognition.stop();
+            }
+        }
+
+        // Text-to-Speech test
+        function testTextToSpeech() {
+            const text = document.getElementById('testText').value.trim();
+            const resultDiv = document.getElementById('ttsResult');
+            
+            if (!text) {
+                setStatus('ttsStatus', 'offline');
+                resultDiv.className = 'result error';
+                resultDiv.textContent = '❌ Please enter text to speak';
+                return;
+            }
+            
+            if ('speechSynthesis' in window) {
+                try {
+                    setStatus('ttsStatus', 'loading');
+                    speechSynthesis.cancel();
+                    
+                    const utterance = new SpeechSynthesisUtterance(text);
+                    utterance.lang = 'en-US';
+                    utterance.rate = 0.8;
+                    utterance.pitch = 1;
+                    utterance.volume = 1;
+                    
+                    utterance.onstart = function() {
+                        setStatus('ttsStatus', 'online');
+                        resultDiv.className = 'result';
+                        resultDiv.textContent = `🔊 Speaking: "${text}"\n\n(Audio playing...)`;
+                    };
+                    
+                    utterance.onend = function() {
+                        resultDiv.className = 'result success';
+                        resultDiv.textContent = `✅ Text-to-Speech Complete!\nSpoken Text: "${text}"\n\nTTS is working perfectly!`;
+                    };
+                    
+                    utterance.onerror = function(event) {
+                        setStatus('ttsStatus', 'offline');
+                        resultDiv.className = 'result error';
+                        resultDiv.textContent = `❌ TTS Error: ${event.error}`;
+                    };
+                    
+                    speechSynthesis.speak(utterance);
+                    
+                } catch (error) {
+                    setStatus('ttsStatus', 'offline');
+                    resultDiv.className = 'result error';
+                    resultDiv.textContent = `❌ TTS Setup Error: ${error.message}`;
+                }
+            } else {
+                setStatus('ttsStatus', 'offline');
+                resultDiv.className = 'result error';
+                resultDiv.textContent = '❌ Text-to-speech not supported in this browser';
+            }
+        }
+
+        // Full voice translation test
+        function startFullVoiceTest() {
+            const resultDiv = document.getElementById('fullTestResult');
+            const button = document.getElementById('fullTestBtn');
+            
+            resultDiv.textContent = '🎯 Starting full voice translation test...\n\n1. Preparing speech recognition...';
+            resultDiv.className = 'result';
+            button.disabled = true;
+            
+            try {
+                const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+                
+                if (!SpeechRecognition) {
+                    throw new Error('Speech recognition not supported');
+                }
+                
+                const fullTestRecognition = new SpeechRecognition();
+                fullTestRecognition.continuous = false;
+                fullTestRecognition.interimResults = false;
+                fullTestRecognition.lang = 'en-US';
+                
+                fullTestRecognition.onstart = function() {
+                    resultDiv.textContent = '🎯 Full Voice Translation Test\n\n🎤 Step 1: SPEAK NOW!\n\nSay something in English (e.g., "Hello, how are you?")';
+                };
+                
+                fullTestRecognition.onresult = function(event) {
+                    const spokenText = event.results[0][0].transcript;
+                    resultDiv.textContent = `🎯 Full Voice Translation Test\n\n✅ Step 1: Speech captured\nHeard: "${spokenText}"\n\n🔄 Step 2: Translating...`;
+                    
+                    // Translate the text and speak it automatically
+                    translateAndSpeakAuto(spokenText, resultDiv, button);
+                };
+                
+                fullTestRecognition.onerror = function(event) {
+                    resultDiv.className = 'result error';
+                    resultDiv.textContent = `❌ Full test failed at speech recognition!\nError: ${event.error}`;
+                    button.disabled = false;
+                };
+                
+                fullTestRecognition.start();
+                
+            } catch (error) {
+                resultDiv.className = 'result error';
+                resultDiv.textContent = `❌ Full test setup failed!\nError: ${error.message}`;
+                button.disabled = false;
+            }
+        }
+        
+        async function translateAndSpeakAuto(text, resultDiv, button) {
+            try {
+                const response = await fetch('/api/translate', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        q: text,
+                        source: 'en',
+                        target: 'pa',
+                        format: 'text'
+                    })
+                });
+                
+                const data = await response.json();
+                
+                if (response.ok && data.data && data.data.translations) {
+                    const translation = data.data.translations[0].translatedText;
+                    
+                    resultDiv.textContent = `🎯 Full Voice Translation Test\n\n✅ Step 1: Speech captured\nHeard: "${text}"\n\n✅ Step 2: Translation complete\nTranslated: "${translation}"\n\n🔊 Step 3: Speaking Punjabi translation...`;
+                    
+                    // Automatically speak the Punjabi translation
+                    speakPunjabiTranslation(translation, text, resultDiv, button);
+                    
+                } else {
+                    throw new Error('Translation failed');
+                }
+            } catch (error) {
+                resultDiv.className = 'result error';
+                resultDiv.textContent = `❌ Full test failed at translation!\nError: ${error.message}`;
+                button.disabled = false;
+            }
+        }
+        
+        function speakPunjabiTranslation(translation, originalText, resultDiv, button) {
+            if ('speechSynthesis' in window) {
+                speechSynthesis.cancel(); // Stop any ongoing speech
+                
+                // Wait a moment for voices to load
+                const speakWhenReady = () => {
+                    const voices = speechSynthesis.getVoices();
+                    console.log('Available voices:', voices.map(v => `${v.name} (${v.lang})`));
+                    
+                    const utterance = new SpeechSynthesisUtterance(translation);
+                    
+                    // Try to find a Punjabi or Hindi voice, fallback to default
+                    let selectedVoice = voices.find(voice => 
+                        voice.lang.includes('pa') || voice.lang.includes('hi') || voice.lang.includes('ur')
+                    );
+                    
+                    if (!selectedVoice) {
+                        // Fallback to any available voice
+                        selectedVoice = voices.find(voice => voice.lang.includes('en')) || voices[0];
+                    }
+                    
+                    if (selectedVoice) {
+                        utterance.voice = selectedVoice;
+                        utterance.lang = selectedVoice.lang;
+                        console.log('Using voice:', selectedVoice.name, selectedVoice.lang);
+                    } else {
+                        utterance.lang = 'hi-IN'; // Fallback to Hindi
+                    }
+                    
+                    utterance.rate = 0.7; // Slower for clarity
+                    utterance.pitch = 1.0;
+                    utterance.volume = 1.0;
+                    
+                    utterance.onstart = function() {
+                        resultDiv.textContent = `🎯 Voice Translation in Progress!\n\n✅ English Input: "${originalText}"\n✅ Punjabi Translation: "${translation}"\n🔊 NOW SPEAKING: Punjabi audio playing...\n\nVoice: ${selectedVoice ? selectedVoice.name : 'Default'}`;
+                    };
+                    
+                    utterance.onend = function() {
+                        resultDiv.className = 'result success';
+                        resultDiv.textContent = `� COMPLETE VOICE TRANSLATION SUCCESS!\n\n🎤 You said: "${originalText}"\n📝 Translated to: "${translation}"\n🔊 Spoke in: ${selectedVoice ? selectedVoice.name : 'Default voice'}\n\n✨ Full English→Punjabi voice translation working!`;
+                        button.disabled = false;
+                    };
+                    
+                    utterance.onerror = function(event) {
+                        console.error('TTS Error:', event);
+                        resultDiv.className = 'result success';
+                        resultDiv.textContent = `🎯 Translation Successful!\n\n✅ English: "${originalText}"\n✅ Punjabi: "${translation}"\n⚠️ Audio: Could not speak Punjabi (${event.error})\n\nTranslation working, audio needs voice support.`;
+                        button.disabled = false;
+                    };
+                    
+                    console.log('Speaking translation:', translation);
+                    speechSynthesis.speak(utterance);
+                };
+                
+                // Load voices if not already loaded
+                if (speechSynthesis.getVoices().length === 0) {
+                    speechSynthesis.addEventListener('voiceschanged', speakWhenReady, { once: true });
+                } else {
+                    speakWhenReady();
+                }
+                
+            } else {
+                resultDiv.className = 'result success';
+                resultDiv.textContent = `🎯 Translation Successful!\n\n✅ English: "${originalText}"\n✅ Punjabi: "${translation}"\n❌ TTS not available in this browser\n\nCore translation working!`;
+                button.disabled = false;
+            }
+        }
+        
+        // Initialize on page load
+        document.addEventListener('DOMContentLoaded', function() {
+            console.log('Voice Translation Test Page Loaded');
+            
+            // Test server connection immediately
+            setTimeout(testServerConnection, 500);
+            
+            // Set initial status
+            setStatus('serverStatus', 'loading');
+            setStatus('apiStatus', 'offline');
+            setStatus('voiceStatus', 'offline');
+            setStatus('ttsStatus', 'offline');
+        });
+    </script>
+</body>
+</html>

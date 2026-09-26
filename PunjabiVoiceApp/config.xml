@@ -1,0 +1,38 @@
+<?xml version='1.0' encoding='utf-8'?>
+<widget id="com.yourname.punjabivoice" version="1.0.0" xmlns="http://www.w3.org/ns/widgets" xmlns:cdv="http://cordova.apache.org/ns/1.0">
+    <name>Punjabi Voice Translator</name>
+    <description>English to Punjabi voice translation app with Google TTS</description>
+    <author email="your@email.com" href="https://yourwebsite.com">
+        Your Name
+    </author>
+    <content src="app.html" />
+    
+    <!-- Network access -->
+    <access origin="*" />
+    <allow-intent href="http://*/*" />
+    <allow-intent href="https://*/*" />
+    <allow-navigation href="https://texttospeech.googleapis.com/*" />
+    <allow-navigation href="https://translation.googleapis.com/*" />
+    
+    <!-- Permissions -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    
+    <!-- Android specific settings -->
+    <platform name="android">
+        <preference name="android-minSdkVersion" value="24" />
+        <preference name="android-targetSdkVersion" value="34" />
+        <preference name="AndroidPersistentFileLocation" value="Compatibility" />
+        
+        <!-- Allow microphone access -->
+        <config-file target="AndroidManifest.xml" parent="/manifest">
+            <uses-permission android:name="android.permission.RECORD_AUDIO" />
+            <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+        </config-file>
+        
+        <!-- Content Security Policy -->
+        <preference name="ContentSecurityPolicy" value="default-src 'self' https://texttospeech.googleapis.com https://translation.googleapis.com; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline';" />
+    </platform>
+</widget>

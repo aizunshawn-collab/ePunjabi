@@ -1,0 +1,306 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Microphone Permission Fix</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 700px;
+            margin: 30px auto;
+            padding: 20px;
+            background: #f8f9fa;
+        }
+        .container {
+            background: white;
+            padding: 30px;
+            border-radius: 12px;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+        }
+        h1 {
+            color: #dc3545;
+            text-align: center;
+            margin-bottom: 30px;
+        }
+        .step {
+            background: #f8f9fa;
+            padding: 20px;
+            margin: 15px 0;
+            border-radius: 8px;
+            border-left: 4px solid #007bff;
+        }
+        .step h3 {
+            color: #007bff;
+            margin-top: 0;
+        }
+        button {
+            background: #28a745;
+            color: white;
+            border: none;
+            padding: 15px 30px;
+            border-radius: 6px;
+            font-size: 16px;
+            cursor: pointer;
+            margin: 10px 5px;
+        }
+        button:hover {
+            background: #1e7e34;
+        }
+        .test-button {
+            background: #007bff;
+        }
+        .test-button:hover {
+            background: #0056b3;
+        }
+        .result {
+            background: #e9ecef;
+            padding: 15px;
+            margin: 15px 0;
+            border-radius: 6px;
+            font-family: monospace;
+        }
+        .success {
+            background: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+        .error {
+            background: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+        }
+        .warning {
+            background: #fff3cd;
+            color: #856404;
+            border: 1px solid #ffeaa7;
+        }
+        img {
+            max-width: 100%;
+            border: 2px solid #ddd;
+            border-radius: 6px;
+            margin: 10px 0;
+        }
+        code {
+            background: #f8f9fa;
+            padding: 2px 6px;
+            border-radius: 4px;
+            color: #d63384;
+        }
+        .chrome-steps {
+            background: #e3f2fd;
+            padding: 15px;
+            border-radius: 6px;
+            margin: 10px 0;
+        }
+        .edge-steps {
+            background: #f3e5f5;
+            padding: 15px;
+            border-radius: 6px;
+            margin: 10px 0;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🎤 Fix Microphone Access</h1>
+        
+        <div class="step">
+            <h3>🔍 Current Issue</h3>
+            <p><strong>Error:</strong> <code>not-allowed</code></p>
+            <p>This means your browser is blocking microphone access. Let's fix this!</p>
+        </div>
+
+        <div class="step">
+            <h3>📋 Step 1: Check Your Browser</h3>
+            <p id="browserInfo">Detecting browser...</p>
+            <button class="test-button" onclick="detectBrowser()">🔍 Detect My Browser</button>
+        </div>
+
+        <div class="step">
+            <h3>🔐 Step 2: Enable Microphone Permissions</h3>
+            
+            <div class="chrome-steps">
+                <h4>🌐 For Chrome:</h4>
+                <ol>
+                    <li>Look for the <strong>🎤 microphone icon</strong> in the address bar (left side)</li>
+                    <li>Click on it and select <strong>"Allow"</strong></li>
+                    <li>OR go to <code>chrome://settings/content/microphone</code></li>
+                    <li>Make sure this site is allowed</li>
+                </ol>
+            </div>
+
+            <div class="edge-steps">
+                <h4>🔷 For Edge:</h4>
+                <ol>
+                    <li>Look for the <strong>🎤 microphone icon</strong> in the address bar</li>
+                    <li>Click on it and select <strong>"Allow"</strong></li>
+                    <li>OR go to <code>edge://settings/content/microphone</code></li>
+                    <li>Add this site to allowed list</li>
+                </ol>
+            </div>
+        </div>
+
+        <div class="step">
+            <h3>🧪 Step 3: Test Microphone Permission</h3>
+            <button onclick="requestMicrophonePermission()">🎤 Request Microphone Access</button>
+            <button class="test-button" onclick="testMicrophone()">🧪 Test Microphone</button>
+            <div id="permissionResult" class="result">Click "Request Microphone Access" first...</div>
+        </div>
+
+        <div class="step">
+            <h3>🎯 Step 4: Test Voice Recognition</h3>
+            <button onclick="testVoiceRecognition()">🗣️ Test Voice Recognition</button>
+            <div id="voiceResult" class="result">Test microphone first, then try voice recognition...</div>
+        </div>
+
+        <div class="step">
+            <h3>🔄 Step 5: Return to Voice Translation</h3>
+            <p>Once microphone works above, go back to the voice translation app:</p>
+            <button onclick="goToVoiceApp()">🎤 Open Voice Translation App</button>
+        </div>
+
+        <div class="step">
+            <h3>❓ Still Having Issues?</h3>
+            <div class="warning">
+                <p><strong>Try these additional fixes:</strong></p>
+                <ul>
+                    <li>🔄 <strong>Refresh the page</strong> after allowing microphone</li>
+                    <li>🌐 <strong>Use Chrome or Edge</strong> (best compatibility)</li>
+                    <li>🔐 <strong>Check system microphone settings</strong></li>
+                    <li>🎧 <strong>Test microphone in other apps</strong> first</li>
+                    <li>🛡️ <strong>Disable ad blockers</strong> temporarily</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        function detectBrowser() {
+            const browserInfo = document.getElementById('browserInfo');
+            const userAgent = navigator.userAgent;
+            let browser = 'Unknown';
+            let recommendation = '';
+
+            if (userAgent.includes('Chrome') && !userAgent.includes('Edge')) {
+                browser = '✅ Google Chrome (Excellent for voice features)';
+                recommendation = 'Perfect choice! Chrome has the best voice recognition support.';
+            } else if (userAgent.includes('Edge')) {
+                browser = '✅ Microsoft Edge (Excellent for voice features)';
+                recommendation = 'Great choice! Edge has excellent voice recognition support.';
+            } else if (userAgent.includes('Firefox')) {
+                browser = '⚠️ Mozilla Firefox (Limited voice support)';
+                recommendation = 'Consider switching to Chrome or Edge for better voice features.';
+            } else if (userAgent.includes('Safari')) {
+                browser = '⚠️ Safari (Limited voice support)';
+                recommendation = 'Consider switching to Chrome or Edge for better voice features.';
+            }
+
+            browserInfo.innerHTML = `
+                <strong>Your Browser:</strong> ${browser}<br>
+                <strong>Recommendation:</strong> ${recommendation}<br>
+                <strong>User Agent:</strong> <code>${userAgent}</code>
+            `;
+        }
+
+        async function requestMicrophonePermission() {
+            const resultDiv = document.getElementById('permissionResult');
+            resultDiv.textContent = 'Requesting microphone permission...';
+            resultDiv.className = 'result';
+
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                
+                // Permission granted!
+                resultDiv.className = 'result success';
+                resultDiv.textContent = '✅ SUCCESS! Microphone permission granted!\n\nYou can now use voice features. The microphone is working properly.';
+                
+                // Stop the stream
+                stream.getTracks().forEach(track => track.stop());
+                
+            } catch (error) {
+                resultDiv.className = 'result error';
+                
+                if (error.name === 'NotAllowedError') {
+                    resultDiv.textContent = `❌ Permission Denied!\n\nYou need to:\n1. Click the 🎤 icon in the address bar\n2. Select "Allow" for microphone\n3. Refresh this page\n4. Try again\n\nError: ${error.name}`;
+                } else if (error.name === 'NotFoundError') {
+                    resultDiv.textContent = `❌ No Microphone Found!\n\nCheck:\n1. Microphone is connected\n2. Microphone is enabled in system settings\n3. Try a different microphone\n\nError: ${error.name}`;
+                } else {
+                    resultDiv.textContent = `❌ Microphone Error!\n\nError: ${error.name}\nMessage: ${error.message}\n\nTry:\n1. Refresh the page\n2. Check browser settings\n3. Try a different browser`;
+                }
+            }
+        }
+
+        function testMicrophone() {
+            const resultDiv = document.getElementById('permissionResult');
+            
+            if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+                resultDiv.className = 'result success';
+                resultDiv.textContent = '✅ Microphone API Available!\n\nClick "Request Microphone Access" to test actual permission.';
+            } else {
+                resultDiv.className = 'result error';
+                resultDiv.textContent = '❌ Microphone API Not Available!\n\nThis browser doesn\'t support microphone access.\nPlease use Chrome or Edge.';
+            }
+        }
+
+        function testVoiceRecognition() {
+            const resultDiv = document.getElementById('voiceResult');
+            
+            try {
+                const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+                
+                if (!SpeechRecognition) {
+                    resultDiv.className = 'result error';
+                    resultDiv.textContent = '❌ Speech Recognition Not Supported!\n\nThis browser doesn\'t support voice recognition.\nPlease use Chrome or Edge.';
+                    return;
+                }
+
+                const recognition = new SpeechRecognition();
+                recognition.continuous = false;
+                recognition.interimResults = false;
+                recognition.lang = 'en-US';
+
+                recognition.onstart = function() {
+                    resultDiv.className = 'result';
+                    resultDiv.textContent = '🎤 Voice Recognition Started!\n\nSpeak now... Say "Hello" or "Test"';
+                };
+
+                recognition.onresult = function(event) {
+                    const transcript = event.results[0][0].transcript;
+                    resultDiv.className = 'result success';
+                    resultDiv.textContent = `✅ VOICE RECOGNITION WORKING!\n\nYou said: "${transcript}"\n\nVoice features are now ready to use!`;
+                };
+
+                recognition.onerror = function(event) {
+                    resultDiv.className = 'result error';
+                    
+                    if (event.error === 'not-allowed') {
+                        resultDiv.textContent = '❌ Still Permission Denied!\n\nSteps to fix:\n1. Look for 🎤 icon in address bar\n2. Click it and choose "Allow"\n3. Refresh this page\n4. Try again';
+                    } else {
+                        resultDiv.textContent = `❌ Voice Recognition Error!\n\nError: ${event.error}\n\nTry:\n1. Speak louder and clearer\n2. Check microphone connection\n3. Try again`;
+                    }
+                };
+
+                recognition.onend = function() {
+                    console.log('Voice recognition ended');
+                };
+
+                recognition.start();
+
+            } catch (error) {
+                resultDiv.className = 'result error';
+                resultDiv.textContent = `❌ Voice Recognition Setup Failed!\n\nError: ${error.message}\n\nPlease use Chrome or Edge browser.`;
+            }
+        }
+
+        function goToVoiceApp() {
+            window.open('http://localhost:3000/voice-translation-test.html', '_blank');
+        }
+
+        // Auto-detect browser on page load
+        document.addEventListener('DOMContentLoaded', function() {
+            detectBrowser();
+        });
+    </script>
+</body>
+</html>

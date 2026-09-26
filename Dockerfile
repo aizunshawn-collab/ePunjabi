@@ -10,8 +10,9 @@ FROM pytorch/pytorch:2.5.1-cuda12.1-cudnn9-runtime
 # real time instead of sitting in a buffer until the process exits.
 ENV PYTHONUNBUFFERED=1
 
-# ffmpeg is required by Whisper to decode uploaded audio.
-RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg \
+# ffmpeg is required by Whisper to decode uploaded audio. curl is used by the
+# in-container watchdog to poll /health.
+RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg curl \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -19,19 +20,34 @@ WORKDIR /app
 COPY requirements.txt .
 # torch is already provided by the base image (CUDA build) - skip reinstalling
 # it from requirements.txt so pip doesn't silently swap in a CPU-only wheel.
+# supervisor runs gunicorn as a supervised process so a full process death
+# (not just a worker crash, which gunicorn already handles on its own) gets
+# restarted automatically - this matters most on a persistent Pod, which has
+# no equivalent of Serverless's own health-check-based worker restarts.
 RUN grep -v '^torch' requirements.txt > requirements.docker.txt \
-    && pip install --no-cache-dir -r requirements.docker.txt gunicorn
+    && pip install --no-cache-dir -r requirements.docker.txt gunicorn supervisor
 
-COPY ai_backend_server.py indictrans_processor.py ./
+COPY ai_backend_server.py indictrans_processor.py supervisord.conf watchdog.sh ./
+# Fine-tuned Punjabi Whisper checkpoint (see finetune_whisper_punjabi.py) -
+# without this, the app silently falls back to only the generic Whisper
+# model for Punjabi audio too.
+COPY models/whisper-punjabi-final ./models/whisper-punjabi-final
+RUN chmod +x watchdog.sh
+
+# Pre-download/load every model at build time by importing the app module
+# (its model-loading code runs unconditionally at import time, the same way
+# gunicorn will import it later). This bakes ~8-10GB of weights into the
+# image layer so cold-start workers load them from local disk instead of
+# downloading from Hugging Face/OpenAI over the network on every cold start -
+# that network download, not raw model-load time, is the dominant cold-start
+# cost for this app. No GPU is available at build time, so this just runs on
+# CPU long enough to populate the on-disk caches; it does not run inference.
+RUN python -c "import ai_backend_server"
 
 EXPOSE 8080
 
-# Single worker: the model is loaded once into GPU memory per worker, so
-# more workers would multiply GPU memory usage rather than add capacity.
-# Threads give some request concurrency without a second model copy.
-# timeout is long because a cold start downloads and loads several GB of
-# models at import time before the worker can answer anything, including
-# health checks - a short timeout makes gunicorn kill the worker as
-# "unresponsive" mid-load, so it never finishes starting.
-CMD ["gunicorn", "--bind", "0.0.0.0:8080", "--workers", "1", "--threads", "4", \
-     "--timeout", "900", "ai_backend_server:app"]
+# supervisord runs both gunicorn and watchdog.sh (see supervisord.conf):
+# gunicorn's own --timeout 900 tolerates the long cold-start model load, and
+# the watchdog force-restarts gunicorn if /health ever stops responding after
+# a successful start (a hang, not just a crash gunicorn would already retry).
+CMD ["supervisord", "-c", "/app/supervisord.conf"]

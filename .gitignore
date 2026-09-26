@@ -22,6 +22,25 @@
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
+*.log
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Crash dumps / debug artifacts
+*.hprof
+_debug_last_ocr.png
+
+# Signing/certs - never commit these
+*.pem
+
+# Large model weights - hosted on Hugging Face Hub instead, downloaded at
+# Docker build time (see Dockerfile) rather than committed to git (this repo
+# also has no Git LFS set up, and GitHub hard-blocks any file over 100MB).
+models/
+
 
 # OSX
 #
@@ -67,6 +86,7 @@ buck-out/
 \.buckd/
 *.keystore
 !debug.keystore
+keystore.properties
 
 # fastlane
 #

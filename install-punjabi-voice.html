@@ -1,0 +1,376 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Install Punjabi Voice Support</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 20px auto;
+            padding: 20px;
+            background: #f8f9fa;
+        }
+        .container {
+            background: white;
+            padding: 30px;
+            border-radius: 12px;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+        }
+        h1 {
+            color: #dc3545;
+            text-align: center;
+            margin-bottom: 30px;
+        }
+        .step {
+            background: #f8f9fa;
+            padding: 20px;
+            margin: 15px 0;
+            border-radius: 8px;
+            border-left: 4px solid #007bff;
+        }
+        .step h3 {
+            color: #007bff;
+            margin-top: 0;
+        }
+        .warning {
+            background: #fff3cd;
+            border: 1px solid #ffeaa7;
+            color: #856404;
+            padding: 15px;
+            border-radius: 6px;
+            margin: 15px 0;
+        }
+        .success {
+            background: #d4edda;
+            border: 1px solid #c3e6cb;
+            color: #155724;
+            padding: 15px;
+            border-radius: 6px;
+            margin: 15px 0;
+        }
+        .info {
+            background: #d1ecf1;
+            border: 1px solid #bee5eb;
+            color: #0c5460;
+            padding: 15px;
+            border-radius: 6px;
+            margin: 15px 0;
+        }
+        button {
+            background: #28a745;
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 6px;
+            font-size: 16px;
+            cursor: pointer;
+            margin: 10px 5px;
+        }
+        button:hover {
+            background: #1e7e34;
+        }
+        .test-button {
+            background: #007bff;
+        }
+        .test-button:hover {
+            background: #0056b3;
+        }
+        code {
+            background: #f8f9fa;
+            padding: 3px 6px;
+            border-radius: 4px;
+            color: #d63384;
+            font-family: monospace;
+        }
+        .voice-list {
+            background: #e9ecef;
+            padding: 15px;
+            border-radius: 6px;
+            margin: 10px 0;
+            font-family: monospace;
+            max-height: 200px;
+            overflow-y: auto;
+        }
+        .download-links {
+            background: #e3f2fd;
+            padding: 20px;
+            border-radius: 8px;
+            margin: 15px 0;
+        }
+        .download-links h4 {
+            color: #1976d2;
+            margin-top: 0;
+        }
+        .download-links a {
+            color: #1976d2;
+            text-decoration: none;
+            font-weight: bold;
+        }
+        .download-links a:hover {
+            text-decoration: underline;
+        }
+        ol {
+            padding-left: 20px;
+        }
+        li {
+            margin: 8px 0;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🎵 Install Punjabi Voice Support</h1>
+        
+        <div class="warning">
+            <h3>⚠️ Current Issue</h3>
+            <p>Your system doesn't have Punjabi/Hindi voices installed. Let's fix this!</p>
+        </div>
+
+        <div class="step">
+            <h3>🔍 Step 1: Check Current Voices</h3>
+            <button onclick="listAllVoices()">📋 Show All Available Voices</button>
+            <div id="voiceList" class="voice-list">Click button to scan voices...</div>
+        </div>
+
+        <div class="step">
+            <h3>💾 Step 2: Install Punjabi/Hindi Voices</h3>
+            
+            <div class="download-links">
+                <h4>🖥️ Windows 10/11:</h4>
+                <ol>
+                    <li>Open <strong>Settings</strong> → <strong>Time & Language</strong> → <strong>Speech</strong></li>
+                    <li>Click <strong>"Manage voices"</strong></li>
+                    <li>Click <strong>"Add voices"</strong></li>
+                    <li>Search for and install:
+                        <ul>
+                            <li><strong>Hindi (India)</strong> - Heera, Swara</li>
+                            <li><strong>Urdu (Pakistan)</strong> - Salman</li>
+                            <li><strong>Punjabi (India)</strong> - if available</li>
+                        </ul>
+                    </li>
+                    <li>Restart your browser after installation</li>
+                </ol>
+                
+                <p><strong>Alternative Windows Method:</strong></p>
+                <ol>
+                    <li>Go to <strong>Settings</strong> → <strong>Apps</strong> → <strong>Optional Features</strong></li>
+                    <li>Click <strong>"Add an optional feature"</strong></li>
+                    <li>Search for <strong>"Speech"</strong> or <strong>"Text-to-speech"</strong></li>
+                    <li>Install Hindi/Urdu speech packages</li>
+                </ol>
+            </div>
+
+            <div class="download-links">
+                <h4>🍎 macOS:</h4>
+                <ol>
+                    <li>Open <strong>System Preferences</strong> → <strong>Accessibility</strong> → <strong>Spoken Content</strong></li>
+                    <li>Click <strong>"System Voice"</strong> dropdown</li>
+                    <li>Click <strong>"Customize..."</strong></li>
+                    <li>Download:
+                        <ul>
+                            <li><strong>Lekha (Hindi)</strong></li>
+                            <li><strong>Sangeeta (Hindi)</strong></li>
+                        </ul>
+                    </li>
+                    <li>Restart your browser</li>
+                </ol>
+            </div>
+
+            <div class="download-links">
+                <h4>🐧 Linux:</h4>
+                <ol>
+                    <li>Install eSpeak with Hindi support:
+                        <br><code>sudo apt-get install espeak espeak-data-hi</code>
+                    </li>
+                    <li>Or install Festival with Hindi:
+                        <br><code>sudo apt-get install festival festvox-hi-nsk</code>
+                    </li>
+                </ol>
+            </div>
+        </div>
+
+        <div class="step">
+            <h3>🧪 Step 3: Test Voice After Installation</h3>
+            <button onclick="testHindiVoice()">🗣️ Test Hindi Voice</button>
+            <button onclick="testUrduVoice()">🗣️ Test Urdu Voice</button>
+            <button onclick="testPunjabiText()">🗣️ Test Punjabi Text</button>
+            <div id="testResult" class="voice-list">Click test buttons after installing voices...</div>
+        </div>
+
+        <div class="step">
+            <h3>⚡ Step 4: Use Web-Based Voice Alternative</h3>
+            <p>If installing system voices is difficult, we can use Google's online TTS:</p>
+            <button class="test-button" onclick="useGoogleTTS()">🌐 Try Google Cloud TTS</button>
+            <button class="test-button" onclick="useWebSpeechAPI()">🔊 Enhanced Web Speech</button>
+            <div id="alternativeResult" class="voice-list">Alternative voice solutions...</div>
+        </div>
+
+        <div class="info">
+            <h3>💡 Quick Fixes</h3>
+            <ul>
+                <li><strong>Restart Browser</strong> after installing new voices</li>
+                <li><strong>Clear Browser Cache</strong> if voices don't appear</li>
+                <li><strong>Use Chrome/Edge</strong> for best voice support</li>
+                <li><strong>Check Windows Updates</strong> for latest voice packages</li>
+            </ul>
+        </div>
+
+        <div class="step">
+            <h3>🔄 Step 5: Return to Voice Translation</h3>
+            <p>After installing voices, test the translation app:</p>
+            <button onclick="goBackToApp()">🎤 Test Voice Translation App</button>
+        </div>
+    </div>
+
+    <script>
+        function listAllVoices() {
+            const voiceList = document.getElementById('voiceList');
+            
+            if ('speechSynthesis' in window) {
+                const voices = speechSynthesis.getVoices();
+                
+                if (voices.length === 0) {
+                    voiceList.innerHTML = '⏳ Loading voices... (this may take a moment)\n\nIf no voices appear, your browser may not support voice listing.';
+                    
+                    // Try again after a delay
+                    setTimeout(() => {
+                        const retryVoices = speechSynthesis.getVoices();
+                        if (retryVoices.length > 0) {
+                            displayVoices(retryVoices);
+                        }
+                    }, 1000);
+                } else {
+                    displayVoices(voices);
+                }
+            } else {
+                voiceList.innerHTML = '❌ Speech synthesis not supported in this browser.';
+            }
+        }
+        
+        function displayVoices(voices) {
+            const voiceList = document.getElementById('voiceList');
+            let output = `Found ${voices.length} voices:\n\n`;
+            
+            // Categorize voices
+            const hindiVoices = voices.filter(v => v.lang.includes('hi'));
+            const urduVoices = voices.filter(v => v.lang.includes('ur'));
+            const punjabiVoices = voices.filter(v => v.lang.includes('pa'));
+            const englishVoices = voices.filter(v => v.lang.includes('en'));
+            
+            if (punjabiVoices.length > 0) {
+                output += '✅ PUNJABI VOICES FOUND:\n';
+                punjabiVoices.forEach(voice => {
+                    output += `  • ${voice.name} (${voice.lang})\n`;
+                });
+                output += '\n';
+            }
+            
+            if (hindiVoices.length > 0) {
+                output += '✅ HINDI VOICES FOUND:\n';
+                hindiVoices.forEach(voice => {
+                    output += `  • ${voice.name} (${voice.lang})\n`;
+                });
+                output += '\n';
+            }
+            
+            if (urduVoices.length > 0) {
+                output += '✅ URDU VOICES FOUND:\n';
+                urduVoices.forEach(voice => {
+                    output += `  • ${voice.name} (${voice.lang})\n`;
+                });
+                output += '\n';
+            }
+            
+            if (punjabiVoices.length === 0 && hindiVoices.length === 0 && urduVoices.length === 0) {
+                output += '❌ NO PUNJABI/HINDI/URDU VOICES FOUND\n\n';
+                output += '📥 You need to install voices using the steps above.\n\n';
+            }
+            
+            output += `📋 Sample of other available voices:\n`;
+            voices.slice(0, 10).forEach(voice => {
+                output += `  • ${voice.name} (${voice.lang})\n`;
+            });
+            
+            if (voices.length > 10) {
+                output += `  ... and ${voices.length - 10} more voices\n`;
+            }
+            
+            voiceList.textContent = output;
+        }
+
+        function testHindiVoice() {
+            testVoiceWithLanguage('hi', 'नमस्ते, मैं हिंदी में बोल रहा हूं', 'Hindi');
+        }
+
+        function testUrduVoice() {
+            testVoiceWithLanguage('ur', 'السلام علیکم، میں اردو میں بول رہا ہوں', 'Urdu');
+        }
+
+        function testPunjabiText() {
+            // Test Punjabi text with Hindi voice (closest option)
+            testVoiceWithLanguage('hi', 'ਸਤ ਸ੍ਰੀ ਅਕਾਲ, ਮੈਂ ਪੰਜਾਬੀ ਵਿੱਚ ਬੋਲ ਰਿਹਾ ਹਾਂ', 'Punjabi (using Hindi voice)');
+        }
+
+        function testVoiceWithLanguage(langCode, text, languageName) {
+            const resultDiv = document.getElementById('testResult');
+            
+            if ('speechSynthesis' in window) {
+                const voices = speechSynthesis.getVoices();
+                const targetVoice = voices.find(voice => voice.lang.includes(langCode));
+                
+                if (targetVoice) {
+                    resultDiv.textContent = `🔊 Testing ${languageName} voice: ${targetVoice.name}\nSpeaking: "${text}"\n\n✅ Voice found and playing!`;
+                    
+                    speechSynthesis.cancel();
+                    const utterance = new SpeechSynthesisUtterance(text);
+                    utterance.voice = targetVoice;
+                    utterance.lang = targetVoice.lang;
+                    utterance.rate = 0.8;
+                    
+                    utterance.onend = function() {
+                        resultDiv.textContent += '\n\n✅ Voice test completed successfully!';
+                    };
+                    
+                    utterance.onerror = function(event) {
+                        resultDiv.textContent += `\n\n❌ Voice test error: ${event.error}`;
+                    };
+                    
+                    speechSynthesis.speak(utterance);
+                } else {
+                    resultDiv.textContent = `❌ No ${languageName} voice found.\n\nPlease install ${languageName} voices using the instructions above.`;
+                }
+            } else {
+                resultDiv.textContent = '❌ Text-to-speech not supported in this browser.';
+            }
+        }
+
+        function useGoogleTTS() {
+            const resultDiv = document.getElementById('alternativeResult');
+            resultDiv.textContent = '🌐 Google Cloud TTS would require API setup.\n\nFor now, try installing system voices first.\n\nAlternatively, we can modify the app to use online TTS services.';
+        }
+
+        function useWebSpeechAPI() {
+            const resultDiv = document.getElementById('alternativeResult');
+            resultDiv.textContent = '🔊 Enhanced Web Speech API solution:\n\n1. Use phonetic pronunciation\n2. Slow down English voice for Punjabi text\n3. Use closest available language\n\nThis is already implemented in the voice app!';
+        }
+
+        function goBackToApp() {
+            window.open('http://localhost:3000/voice-to-voice.html', '_blank');
+        }
+
+        // Auto-load voices when page opens
+        document.addEventListener('DOMContentLoaded', function() {
+            // Give a moment for voices to load
+            setTimeout(() => {
+                if (speechSynthesis.getVoices().length === 0) {
+                    speechSynthesis.addEventListener('voiceschanged', listAllVoices, { once: true });
+                } else {
+                    listAllVoices();
+                }
+            }, 500);
+        });
+    </script>
+</body>
+</html>

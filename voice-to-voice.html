@@ -1,0 +1,641 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Voice-to-Voice Translation</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 900px;
+            margin: 20px auto;
+            padding: 20px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+        }
+        .container {
+            background: white;
+            padding: 40px;
+            border-radius: 20px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+        }
+        h1 {
+            text-align: center;
+            color: #333;
+            margin-bottom: 10px;
+            font-size: 2.5em;
+        }
+        .subtitle {
+            text-align: center;
+            color: #666;
+            margin-bottom: 40px;
+            font-size: 1.2em;
+        }
+        .translation-area {
+            display: grid;
+            grid-template-columns: 1fr auto 1fr;
+            gap: 30px;
+            align-items: center;
+            margin: 40px 0;
+        }
+        .language-section {
+            text-align: center;
+            padding: 30px;
+            border: 2px dashed #ddd;
+            border-radius: 15px;
+            background: #f8f9fa;
+            transition: all 0.3s ease;
+        }
+        .language-section.active {
+            border-color: #007bff;
+            background: #e3f2fd;
+            transform: scale(1.02);
+        }
+        .language-section.speaking {
+            border-color: #28a745;
+            background: #d4edda;
+            animation: pulse 2s infinite;
+        }
+        .language-title {
+            font-size: 1.5em;
+            font-weight: bold;
+            color: #333;
+            margin-bottom: 20px;
+        }
+        .voice-button {
+            background: linear-gradient(45deg, #007bff, #0056b3);
+            color: white;
+            border: none;
+            padding: 20px;
+            border-radius: 50%;
+            font-size: 2em;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            width: 80px;
+            height: 80px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin: 0 auto 20px;
+            box-shadow: 0 4px 15px rgba(0,123,255,0.3);
+        }
+        .voice-button:hover {
+            transform: scale(1.1);
+        }
+        .voice-button.recording {
+            background: linear-gradient(45deg, #dc3545, #c82333);
+            animation: pulse 1.5s infinite;
+        }
+        .voice-button.speaking {
+            background: linear-gradient(45deg, #28a745, #1e7e34);
+            animation: pulse 2s infinite;
+        }
+        .text-display {
+            min-height: 80px;
+            padding: 15px;
+            background: white;
+            border: 1px solid #ddd;
+            border-radius: 10px;
+            font-size: 16px;
+            line-height: 1.5;
+            color: #333;
+        }
+        .swap-arrow {
+            font-size: 3em;
+            color: #007bff;
+            cursor: pointer;
+            transition: transform 0.3s ease;
+        }
+        .swap-arrow:hover {
+            transform: rotate(180deg);
+        }
+        .status {
+            text-align: center;
+            padding: 20px;
+            margin: 20px 0;
+            border-radius: 10px;
+            font-weight: 500;
+            min-height: 60px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .status.idle {
+            background: #e9ecef;
+            color: #495057;
+        }
+        .status.listening {
+            background: #d1ecf1;
+            color: #0c5460;
+            border-left: 5px solid #007bff;
+        }
+        .status.translating {
+            background: #fff3cd;
+            color: #856404;
+            border-left: 5px solid #ffc107;
+        }
+        .status.speaking {
+            background: #d4edda;
+            color: #155724;
+            border-left: 5px solid #28a745;
+        }
+        .status.error {
+            background: #f8d7da;
+            color: #721c24;
+            border-left: 5px solid #dc3545;
+        }
+        .status.success {
+            background: #d4edda;
+            color: #155724;
+            border-left: 5px solid #28a745;
+        }
+        .controls {
+            text-align: center;
+            margin: 40px 0;
+        }
+        .control-button {
+            background: #6c757d;
+            color: white;
+            border: none;
+            padding: 12px 30px;
+            border-radius: 25px;
+            font-size: 16px;
+            cursor: pointer;
+            margin: 0 10px;
+            transition: all 0.3s ease;
+        }
+        .control-button:hover {
+            background: #545b62;
+            transform: translateY(-2px);
+        }
+        .control-button.primary {
+            background: linear-gradient(45deg, #007bff, #0056b3);
+        }
+        .control-button.primary:hover {
+            background: linear-gradient(45deg, #0056b3, #004085);
+        }
+        @keyframes pulse {
+            0% { transform: scale(1); }
+            50% { transform: scale(1.05); }
+            100% { transform: scale(1); }
+        }
+        .voice-info {
+            background: #f8f9fa;
+            padding: 20px;
+            border-radius: 10px;
+            margin: 20px 0;
+            border-left: 5px solid #007bff;
+        }
+        .voice-info h3 {
+            margin-top: 0;
+            color: #007bff;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🎤➡️🔊 Voice-to-Voice Translation</h1>
+        <p class="subtitle">Speak in English, hear it in Punjabi instantly!</p>
+        
+        <div class="translation-area">
+            <!-- English Input Section -->
+            <div class="language-section" id="englishSection">
+                <div class="language-title">🇺🇸 English Input</div>
+                <button class="voice-button" id="englishMic" onclick="startEnglishRecording()">
+                    🎤
+                </button>
+                <div class="text-display" id="englishText">Click microphone to speak in English...</div>
+            </div>
+            
+            <!-- Swap Arrow -->
+            <div class="swap-arrow" onclick="swapLanguages()">⟷</div>
+            
+            <!-- Punjabi Output Section -->
+            <div class="language-section" id="punjabiSection">
+                <div class="language-title">🇮🇳 Punjabi Output</div>
+                <button class="voice-button" id="punjabiSpeaker" onclick="speakPunjabi()">
+                    🔊
+                </button>
+                <div class="text-display" id="punjabiText">Translation will appear here...</div>
+            </div>
+        </div>
+        
+        <!-- Status Display -->
+        <div class="status idle" id="statusDisplay">
+            Ready for voice translation. Click the microphone to start!
+        </div>
+        
+        <!-- Controls -->
+        <div class="controls">
+            <button class="control-button primary" onclick="startVoiceTranslation()">
+                🎯 Start Voice Translation
+            </button>
+            <button class="control-button" onclick="clearAll()">
+                🗑️ Clear All
+            </button>
+            <button class="control-button" onclick="testConnection()">
+                🔧 Test Connection
+            </button>
+        </div>
+        
+        <!-- Voice Information -->
+        <div class="voice-info">
+            <h3>🎵 Available Voices</h3>
+            <div id="voiceList">Loading available voices...</div>
+            <p><strong>How it works:</strong> Speak in English → Automatic translation → Punjabi voice output</p>
+            <div style="text-align: center; margin-top: 15px;">
+                <button class="control-button" onclick="installVoices()" style="background: #ff6b6b;">
+                    📥 Install Punjabi/Hindi Voices
+                </button>
+                <button class="control-button" onclick="refreshVoices()">
+                    🔄 Refresh Voice List
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let recognition = null;
+        let isListening = false;
+        let currentEnglishText = '';
+        let currentPunjabiText = '';
+        let sourceLanguage = 'en';
+        let targetLanguage = 'pa';
+        let availableVoices = [];
+
+        // Initialize the app
+        document.addEventListener('DOMContentLoaded', function() {
+            initializeVoiceRecognition();
+            loadVoices();
+            updateStatus('Ready for voice translation!', 'idle');
+        });
+
+        function initializeVoiceRecognition() {
+            try {
+                const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+                if (!SpeechRecognition) {
+                    throw new Error('Speech recognition not supported');
+                }
+
+                recognition = new SpeechRecognition();
+                recognition.continuous = false;
+                recognition.interimResults = true;
+                recognition.lang = 'en-US';
+
+                recognition.onstart = function() {
+                    isListening = true;
+                    updateStatus('🎤 Listening... Speak clearly!', 'listening');
+                    document.getElementById('englishSection').classList.add('active');
+                    document.getElementById('englishMic').classList.add('recording');
+                };
+
+                recognition.onresult = function(event) {
+                    let finalTranscript = '';
+                    let interimTranscript = '';
+
+                    for (let i = event.resultIndex; i < event.results.length; i++) {
+                        const transcript = event.results[i][0].transcript;
+                        if (event.results[i].isFinal) {
+                            finalTranscript += transcript;
+                        } else {
+                            interimTranscript += transcript;
+                        }
+                    }
+
+                    if (finalTranscript) {
+                        currentEnglishText = finalTranscript;
+                        document.getElementById('englishText').textContent = finalTranscript;
+                        updateStatus('🔄 Translating to Punjabi...', 'translating');
+                        translateText(finalTranscript);
+                    } else if (interimTranscript) {
+                        document.getElementById('englishText').textContent = interimTranscript + ' (listening...)';
+                    }
+                };
+
+                recognition.onerror = function(event) {
+                    updateStatus(`❌ Speech error: ${event.error}`, 'error');
+                    stopListening();
+                };
+
+                recognition.onend = function() {
+                    stopListening();
+                };
+
+                console.log('✅ Voice recognition initialized');
+            } catch (error) {
+                updateStatus(`❌ Voice setup failed: ${error.message}`, 'error');
+            }
+        }
+
+        function loadVoices() {
+            const loadVoiceList = () => {
+                availableVoices = speechSynthesis.getVoices();
+                const voiceListDiv = document.getElementById('voiceList');
+                
+                if (availableVoices.length > 0) {
+                    // Look for different types of voices
+                    const punjabiVoices = availableVoices.filter(voice => 
+                        voice.lang.toLowerCase().includes('pa') || voice.name.toLowerCase().includes('punjabi')
+                    );
+                    const hindiVoices = availableVoices.filter(voice => 
+                        voice.lang.toLowerCase().includes('hi') || voice.name.toLowerCase().includes('hindi')
+                    );
+                    const urduVoices = availableVoices.filter(voice => 
+                        voice.lang.toLowerCase().includes('ur') || voice.name.toLowerCase().includes('urdu')
+                    );
+                    
+                    let voiceInfo = `📊 Voice Analysis (${availableVoices.length} total voices):\n\n`;
+                    
+                    if (punjabiVoices.length > 0) {
+                        voiceInfo += `✅ PUNJABI VOICES (${punjabiVoices.length}):\n`;
+                        punjabiVoices.forEach(voice => {
+                            voiceInfo += `  • ${voice.name} (${voice.lang})\n`;
+                        });
+                        voiceInfo += '\n';
+                    }
+                    
+                    if (hindiVoices.length > 0) {
+                        voiceInfo += `✅ HINDI VOICES (${hindiVoices.length}):\n`;
+                        hindiVoices.forEach(voice => {
+                            voiceInfo += `  • ${voice.name} (${voice.lang})\n`;
+                        });
+                        voiceInfo += '\n';
+                    }
+                    
+                    if (urduVoices.length > 0) {
+                        voiceInfo += `✅ URDU VOICES (${urduVoices.length}):\n`;
+                        urduVoices.forEach(voice => {
+                            voiceInfo += `  • ${voice.name} (${voice.lang})\n`;
+                        });
+                        voiceInfo += '\n';
+                    }
+                    
+                    if (punjabiVoices.length === 0 && hindiVoices.length === 0 && urduVoices.length === 0) {
+                        voiceInfo += `❌ NO PUNJABI/HINDI/URDU VOICES FOUND\n\n`;
+                        voiceInfo += `🔧 SOLUTION: Install language voices\n`;
+                        voiceInfo += `📱 The app will use English voice to read Punjabi text\n`;
+                        voiceInfo += `🎵 For better pronunciation, install Hindi voices\n\n`;
+                        voiceInfo += `📋 Available voices: ${availableVoices.slice(0, 5).map(v => v.name).join(', ')}\n`;
+                        voiceInfo += `👆 Click "Install Voices" below for help\n`;
+                    } else {
+                        voiceInfo += `🎉 Great! Found ${punjabiVoices.length + hindiVoices.length + urduVoices.length} suitable voices for Punjabi translation!\n`;
+                    }
+                    
+                    voiceListDiv.textContent = voiceInfo;
+                } else {
+                    voiceListDiv.textContent = 'Loading voices...';
+                }
+            };
+
+            if (speechSynthesis.getVoices().length === 0) {
+                speechSynthesis.addEventListener('voiceschanged', loadVoiceList);
+            } else {
+                loadVoiceList();
+            }
+        }
+
+        function startVoiceTranslation() {
+            startEnglishRecording();
+        }
+
+        function startEnglishRecording() {
+            if (isListening) {
+                recognition.stop();
+                return;
+            }
+
+            if (!recognition) {
+                updateStatus('❌ Voice recognition not available', 'error');
+                return;
+            }
+
+            try {
+                recognition.lang = sourceLanguage === 'en' ? 'en-US' : 'pa-IN';
+                recognition.start();
+            } catch (error) {
+                updateStatus(`❌ Could not start recording: ${error.message}`, 'error');
+            }
+        }
+
+        function stopListening() {
+            isListening = false;
+            document.getElementById('englishSection').classList.remove('active');
+            document.getElementById('englishMic').classList.remove('recording');
+        }
+
+        async function translateText(text) {
+            try {
+                const response = await fetch('/api/translate', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        q: text,
+                        source: sourceLanguage,
+                        target: targetLanguage,
+                        format: 'text'
+                    })
+                });
+
+                const data = await response.json();
+
+                if (response.ok && data.data && data.data.translations) {
+                    currentPunjabiText = data.data.translations[0].translatedText;
+                    document.getElementById('punjabiText').textContent = currentPunjabiText;
+                    
+                    updateStatus('🔊 Speaking Punjabi translation...', 'speaking');
+                    
+                    // Automatically speak the translation
+                    setTimeout(() => {
+                        speakPunjabiAuto(currentPunjabiText, text);
+                    }, 500);
+                    
+                } else {
+                    throw new Error(data.error ? data.error.message : 'Translation failed');
+                }
+            } catch (error) {
+                updateStatus(`❌ Translation failed: ${error.message}`, 'error');
+            }
+        }
+
+        function speakPunjabiAuto(translation, originalText) {
+            if ('speechSynthesis' in window) {
+                speechSynthesis.cancel();
+                
+                const utterance = new SpeechSynthesisUtterance(translation);
+                
+                // Enhanced voice selection - try multiple options
+                let selectedVoice = null;
+                let voiceDescription = '';
+                
+                // Priority 1: Look for Punjabi voices
+                selectedVoice = availableVoices.find(voice => 
+                    voice.lang.toLowerCase().includes('pa') || voice.name.toLowerCase().includes('punjabi')
+                );
+                if (selectedVoice) {
+                    voiceDescription = `Punjabi voice: ${selectedVoice.name}`;
+                }
+                
+                // Priority 2: Look for Hindi voices
+                if (!selectedVoice) {
+                    selectedVoice = availableVoices.find(voice => 
+                        voice.lang.toLowerCase().includes('hi') || voice.name.toLowerCase().includes('hindi')
+                    );
+                    if (selectedVoice) {
+                        voiceDescription = `Hindi voice: ${selectedVoice.name}`;
+                    }
+                }
+                
+                // Priority 3: Look for Urdu voices (similar to Punjabi)
+                if (!selectedVoice) {
+                    selectedVoice = availableVoices.find(voice => 
+                        voice.lang.toLowerCase().includes('ur') || voice.name.toLowerCase().includes('urdu')
+                    );
+                    if (selectedVoice) {
+                        voiceDescription = `Urdu voice: ${selectedVoice.name}`;
+                    }
+                }
+                
+                // Priority 4: Use any non-English voice
+                if (!selectedVoice) {
+                    selectedVoice = availableVoices.find(voice => 
+                        !voice.lang.toLowerCase().includes('en')
+                    );
+                    if (selectedVoice) {
+                        voiceDescription = `Alternative voice: ${selectedVoice.name} (${selectedVoice.lang})`;
+                    }
+                }
+                
+                // Priority 5: Use default English voice with modifications
+                if (!selectedVoice) {
+                    selectedVoice = availableVoices.find(voice => 
+                        voice.lang.toLowerCase().includes('en')
+                    ) || availableVoices[0];
+                    voiceDescription = `English voice (reading Punjabi): ${selectedVoice ? selectedVoice.name : 'Default'}`;
+                }
+                
+                if (selectedVoice) {
+                    utterance.voice = selectedVoice;
+                    utterance.lang = selectedVoice.lang;
+                }
+                
+                // Adjust speech settings for better Punjabi pronunciation
+                utterance.rate = 0.6; // Slower for clarity
+                utterance.pitch = 1.0;
+                utterance.volume = 1.0;
+                
+                utterance.onstart = function() {
+                    document.getElementById('punjabiSection').classList.add('speaking');
+                    document.getElementById('punjabiSpeaker').classList.add('speaking');
+                    updateStatus(`🔊 Speaking with ${voiceDescription}`, 'speaking');
+                };
+                
+                utterance.onend = function() {
+                    document.getElementById('punjabiSection').classList.remove('speaking');
+                    document.getElementById('punjabiSpeaker').classList.remove('speaking');
+                    updateStatus(`✅ Voice translation complete!\n🎤 English: "${originalText}"\n📝 Punjabi: "${translation}"\n🔊 Voice: ${voiceDescription}`, 'success');
+                };
+                
+                utterance.onerror = function(event) {
+                    document.getElementById('punjabiSection').classList.remove('speaking');
+                    document.getElementById('punjabiSpeaker').classList.remove('speaking');
+                    updateStatus(`⚠️ Translation successful, but audio failed: ${event.error}\nTry installing Hindi/Punjabi voices in your system settings.`, 'error');
+                };
+                
+                console.log(`Speaking with voice: ${voiceDescription}`);
+                speechSynthesis.speak(utterance);
+            } else {
+                updateStatus('⚠️ Translation successful, but text-to-speech not available', 'error');
+            }
+        }
+
+        function speakPunjabi() {
+            if (!currentPunjabiText) {
+                updateStatus('❌ No Punjabi text to speak. Translate something first!', 'error');
+                return;
+            }
+            
+            speakPunjabiAuto(currentPunjabiText, currentEnglishText);
+        }
+
+        function swapLanguages() {
+            [sourceLanguage, targetLanguage] = [targetLanguage, sourceLanguage];
+            
+            // Update UI
+            const englishTitle = document.querySelector('#englishSection .language-title');
+            const punjabiTitle = document.querySelector('#punjabiSection .language-title');
+            
+            if (sourceLanguage === 'en') {
+                englishTitle.textContent = '🇺🇸 English Input';
+                punjabiTitle.textContent = '🇮🇳 Punjabi Output';
+            } else {
+                englishTitle.textContent = '🇮🇳 Punjabi Input';
+                punjabiTitle.textContent = '🇺🇸 English Output';
+            }
+            
+            // Swap texts
+            [currentEnglishText, currentPunjabiText] = [currentPunjabiText, currentEnglishText];
+            document.getElementById('englishText').textContent = currentEnglishText || 'Click microphone to speak...';
+            document.getElementById('punjabiText').textContent = currentPunjabiText || 'Translation will appear here...';
+            
+            updateStatus('🔄 Languages swapped!', 'success');
+        }
+
+        function clearAll() {
+            currentEnglishText = '';
+            currentPunjabiText = '';
+            document.getElementById('englishText').textContent = 'Click microphone to speak...';
+            document.getElementById('punjabiText').textContent = 'Translation will appear here...';
+            speechSynthesis.cancel();
+            updateStatus('🗑️ Cleared all text', 'idle');
+        }
+
+        async function testConnection() {
+            updateStatus('🔧 Testing connection...', 'translating');
+            
+            try {
+                const response = await fetch('/api/health');
+                const data = await response.json();
+                
+                if (response.ok) {
+                    updateStatus(`✅ Connection test successful: ${data.message}`, 'success');
+                } else {
+                    throw new Error('Server connection failed');
+                }
+            } catch (error) {
+                updateStatus(`❌ Connection test failed: ${error.message}`, 'error');
+            }
+        }
+
+        function updateStatus(message, type) {
+            const statusDiv = document.getElementById('statusDisplay');
+            statusDiv.textContent = message;
+            statusDiv.className = `status ${type}`;
+        }
+
+        function installVoices() {
+            window.open('http://localhost:3000/install-punjabi-voice.html', '_blank');
+        }
+
+        function refreshVoices() {
+            updateStatus('🔄 Refreshing voice list...', 'translating');
+            
+            // Clear current voices and reload
+            availableVoices = [];
+            speechSynthesis.cancel();
+            
+            // Force reload voices
+            if (speechSynthesis.getVoices().length > 0) {
+                loadVoices();
+                updateStatus('✅ Voice list refreshed!', 'success');
+            } else {
+                speechSynthesis.addEventListener('voiceschanged', () => {
+                    loadVoices();
+                    updateStatus('✅ Voice list refreshed!', 'success');
+                }, { once: true });
+            }
+        }
+    </script>
+</body>
+</html>

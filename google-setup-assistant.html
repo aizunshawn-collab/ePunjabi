@@ -1,0 +1,450 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Google Cloud TTS Setup Assistant</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            max-width: 800px;
+            margin: 20px auto;
+            padding: 20px;
+            background: linear-gradient(135deg, #4285f4 0%, #34a853 100%);
+            color: white;
+            min-height: 100vh;
+        }
+        .container {
+            background: rgba(255, 255, 255, 0.98);
+            color: #333;
+            padding: 30px;
+            border-radius: 20px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+        }
+        h1 {
+            text-align: center;
+            color: #4285f4;
+            margin-bottom: 30px;
+        }
+        .step {
+            background: #f8f9fa;
+            padding: 25px;
+            margin: 20px 0;
+            border-radius: 15px;
+            border-left: 6px solid #4285f4;
+            position: relative;
+        }
+        .step.completed {
+            border-left-color: #34a853;
+            background: #e8f5e8;
+        }
+        .step.current {
+            border-left-color: #fbbc04;
+            background: #fff8e1;
+        }
+        .step h3 {
+            margin-top: 0;
+            color: #1a73e8;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        .step-number {
+            background: #4285f4;
+            color: white;
+            width: 30px;
+            height: 30px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: bold;
+            font-size: 14px;
+        }
+        .step.completed .step-number {
+            background: #34a853;
+        }
+        .step.current .step-number {
+            background: #fbbc04;
+        }
+        .action-button {
+            background: #4285f4;
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 25px;
+            cursor: pointer;
+            margin: 10px 5px;
+            font-size: 14px;
+            text-decoration: none;
+            display: inline-block;
+            transition: all 0.3s ease;
+        }
+        .action-button:hover {
+            background: #3367d6;
+            transform: translateY(-1px);
+        }
+        .action-button.success {
+            background: #34a853;
+        }
+        .action-button.success:hover {
+            background: #2d8f47;
+        }
+        .test-section {
+            background: #e3f2fd;
+            padding: 20px;
+            border-radius: 12px;
+            margin: 20px 0;
+        }
+        .api-input {
+            width: 100%;
+            padding: 12px;
+            border: 2px solid #dadce0;
+            border-radius: 8px;
+            font-size: 14px;
+            margin: 10px 0;
+            font-family: monospace;
+            box-sizing: border-box;
+        }
+        .api-input:focus {
+            outline: none;
+            border-color: #4285f4;
+        }
+        .status {
+            background: #f1f3f4;
+            padding: 15px;
+            border-radius: 8px;
+            margin: 10px 0;
+            font-family: monospace;
+            max-height: 200px;
+            overflow-y: auto;
+        }
+        .punjabi-demo {
+            background: #fff3e0;
+            padding: 20px;
+            border-radius: 12px;
+            margin: 20px 0;
+            text-align: center;
+        }
+        .demo-phrase {
+            background: #e1f5fe;
+            padding: 15px;
+            border-radius: 25px;
+            margin: 10px;
+            display: inline-block;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            font-size: 18px;
+            font-family: 'Noto Sans Gurmukhi', sans-serif;
+        }
+        .demo-phrase:hover {
+            background: #b3e5fc;
+            transform: scale(1.05);
+        }
+        .cost-calculator {
+            background: #f3e5f5;
+            padding: 20px;
+            border-radius: 12px;
+            margin: 20px 0;
+        }
+        .calculator-input {
+            width: 80px;
+            padding: 8px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            margin: 0 10px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🎯 Google Cloud TTS Setup Assistant</h1>
+        
+        <div class="step current" id="step1">
+            <h3>
+                <span class="step-number">1</span>
+                Create Google Cloud Account
+            </h3>
+            <p>Sign up for Google Cloud and get $300 free credit for new users!</p>
+            <a href="https://console.cloud.google.com/" target="_blank" class="action-button">
+                🌐 Open Google Cloud Console
+            </a>
+            <button class="action-button success" onclick="completeStep(1)">✅ I have an account</button>
+        </div>
+
+        <div class="step" id="step2">
+            <h3>
+                <span class="step-number">2</span>
+                Create New Project
+            </h3>
+            <p>Create a project specifically for your Punjabi voice translation app.</p>
+            <ol>
+                <li>Click "Select a project" → "New Project"</li>
+                <li>Project name: <code>Punjabi-Voice-Translation</code></li>
+                <li>Click "Create"</li>
+            </ol>
+            <button class="action-button success" onclick="completeStep(2)">✅ Project created</button>
+        </div>
+
+        <div class="step" id="step3">
+            <h3>
+                <span class="step-number">3</span>
+                Enable Text-to-Speech API
+            </h3>
+            <p>Enable the Cloud Text-to-Speech API for your project.</p>
+            <ol>
+                <li>Go to "APIs & Services" → "Library"</li>
+                <li>Search for "Cloud Text-to-Speech API"</li>
+                <li>Click on it and press "Enable"</li>
+            </ol>
+            <a href="https://console.cloud.google.com/apis/library/texttospeech.googleapis.com" target="_blank" class="action-button">
+                🔌 Enable API
+            </a>
+            <button class="action-button success" onclick="completeStep(3)">✅ API enabled</button>
+        </div>
+
+        <div class="step" id="step4">
+            <h3>
+                <span class="step-number">4</span>
+                Create API Key
+            </h3>
+            <p>Generate an API key to authenticate your requests.</p>
+            <ol>
+                <li>Go to "APIs & Services" → "Credentials"</li>
+                <li>Click "+ Create Credentials" → "API Key"</li>
+                <li>Copy your API key (starts with AIza...)</li>
+                <li>Click "Restrict Key" → Select "Cloud Text-to-Speech API"</li>
+            </ol>
+            <a href="https://console.cloud.google.com/apis/credentials" target="_blank" class="action-button">
+                🔑 Create API Key
+            </a>
+            <button class="action-button success" onclick="completeStep(4)">✅ Key created</button>
+        </div>
+
+        <div class="test-section">
+            <h3>🧪 Test Your API Key</h3>
+            <p>Paste your API key here to test it with authentic Punjabi voices:</p>
+            <input type="password" id="testApiKey" class="api-input" placeholder="Paste your API key here (AIza...)">
+            <br>
+            <button class="action-button" onclick="testApiConnection()">🔍 Test Connection</button>
+            <button class="action-button" onclick="testPunjabiVoice()">🎵 Test Punjabi Voice</button>
+            <div id="testStatus" class="status">Ready to test your API key...</div>
+        </div>
+
+        <div class="punjabi-demo">
+            <h3>🎵 Punjabi Voice Demo</h3>
+            <p>Click any phrase to hear authentic Punjabi pronunciation:</p>
+            <div class="demo-phrase" onclick="speakPhrase('ਸਤ ਸ੍ਰੀ ਅਕਾਲ')">ਸਤ ਸ੍ਰੀ ਅਕਾਲ</div>
+            <div class="demo-phrase" onclick="speakPhrase('ਤੁਸੀ ਕਿਵੇਂ ਹੋ?')">ਤੁਸੀ ਕਿਵੇਂ ਹੋ?</div>
+            <div class="demo-phrase" onclick="speakPhrase('ਧੰਨਵਾਦ ਜੀ')">ਧੰਨਵਾਦ ਜੀ</div>
+            <div class="demo-phrase" onclick="speakPhrase('ਮੈਂ ਪੰਜਾਬੀ ਸਿੱਖ ਰਿਹਾ ਹਾਂ')">ਮੈਂ ਪੰਜਾਬੀ ਸਿੱਖ ਰਿਹਾ ਹਾਂ</div>
+        </div>
+
+        <div class="cost-calculator">
+            <h3>💰 Cost Calculator</h3>
+            <p>Calculate your monthly costs based on usage:</p>
+            <label>
+                Translations per day: 
+                <input type="number" class="calculator-input" id="dailyTranslations" value="100" onchange="calculateCost()">
+            </label>
+            <label>
+                Average words per translation: 
+                <input type="number" class="calculator-input" id="averageWords" value="10" onchange="calculateCost()">
+            </label>
+            <div id="costResult" class="status">
+                Monthly cost: $0.12 (well within free tier!)
+            </div>
+        </div>
+
+        <div class="step">
+            <h3>🚀 Ready to Use!</h3>
+            <p>Once your API key is working, you can use it in our translation app:</p>
+            <button class="action-button" onclick="openVoiceApp()">🎤 Open Voice Translation App</button>
+            <button class="action-button" onclick="openOriginalApp()">🌐 Back to Main App</button>
+        </div>
+    </div>
+
+    <script>
+        let completedSteps = parseInt(localStorage.getItem('completedSteps') || '0');
+        let currentApiKey = localStorage.getItem('googleTTSApiKey') || '';
+
+        // Initialize UI
+        document.addEventListener('DOMContentLoaded', function() {
+            updateStepDisplay();
+            if (currentApiKey) {
+                document.getElementById('testApiKey').value = currentApiKey;
+            }
+            calculateCost();
+        });
+
+        function completeStep(stepNumber) {
+            if (stepNumber > completedSteps) {
+                completedSteps = stepNumber;
+                localStorage.setItem('completedSteps', completedSteps.toString());
+                updateStepDisplay();
+            }
+        }
+
+        function updateStepDisplay() {
+            for (let i = 1; i <= 4; i++) {
+                const step = document.getElementById(`step${i}`);
+                step.classList.remove('current', 'completed');
+                
+                if (i <= completedSteps) {
+                    step.classList.add('completed');
+                } else if (i === completedSteps + 1) {
+                    step.classList.add('current');
+                }
+            }
+        }
+
+        async function testApiConnection() {
+            const apiKey = document.getElementById('testApiKey').value.trim();
+            const status = document.getElementById('testStatus');
+            
+            if (!apiKey) {
+                status.textContent = '❌ Please enter your API key first.';
+                return;
+            }
+            
+            status.textContent = '🔍 Testing API connection...';
+            
+            try {
+                const response = await fetch(`https://texttospeech.googleapis.com/v1/voices?key=${apiKey}`);
+                
+                if (response.ok) {
+                    const data = await response.json();
+                    const punjabiVoices = data.voices.filter(voice => 
+                        voice.languageCodes && voice.languageCodes.includes('pa-IN')
+                    );
+                    
+                    status.textContent = `✅ API key valid! Found ${punjabiVoices.length} Punjabi voices:\n` +
+                        punjabiVoices.map(v => `• ${v.name}`).join('\n');
+                    
+                    // Save API key
+                    localStorage.setItem('googleTTSApiKey', apiKey);
+                    currentApiKey = apiKey;
+                    
+                } else {
+                    const error = await response.json();
+                    status.textContent = `❌ API error: ${error.error?.message || 'Invalid API key'}`;
+                }
+            } catch (error) {
+                status.textContent = `❌ Connection error: ${error.message}`;
+            }
+        }
+
+        async function testPunjabiVoice() {
+            const apiKey = document.getElementById('testApiKey').value.trim() || currentApiKey;
+            if (!apiKey) {
+                document.getElementById('testStatus').textContent = '❌ Please test your API connection first.';
+                return;
+            }
+            
+            speakPhrase('ਸਤ ਸ੍ਰੀ ਅਕਾਲ, ਇਹ ਗੂਗਲ ਕਲਾਉਡ ਟੀਟੀਐਸ ਦਾ ਟੈਸਟ ਹੈ');
+        }
+
+        async function speakPhrase(text) {
+            const apiKey = document.getElementById('testApiKey').value.trim() || currentApiKey;
+            const status = document.getElementById('testStatus');
+            
+            if (!apiKey) {
+                status.textContent = '❌ Please enter and test your API key first.';
+                return;
+            }
+            
+            status.textContent = `🗣️ Speaking: "${text}"...`;
+            
+            try {
+                const requestBody = {
+                    input: { text: text },
+                    voice: {
+                        languageCode: 'pa-IN',
+                        name: 'pa-IN-Wavenet-A'
+                    },
+                    audioConfig: {
+                        audioEncoding: 'MP3',
+                        speakingRate: 0.9,
+                        pitch: 0
+                    }
+                };
+
+                const response = await fetch(`https://texttospeech.googleapis.com/v1/text:synthesize?key=${apiKey}`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify(requestBody)
+                });
+
+                if (!response.ok) {
+                    throw new Error(`API error: ${response.statusText}`);
+                }
+
+                const data = await response.json();
+                
+                if (data.audioContent) {
+                    // Convert base64 to audio and play
+                    const audioBytes = atob(data.audioContent);
+                    const audioArray = new Uint8Array(audioBytes.length);
+                    for (let i = 0; i < audioBytes.length; i++) {
+                        audioArray[i] = audioBytes.charCodeAt(i);
+                    }
+                    
+                    const audioBlob = new Blob([audioArray], { type: 'audio/mp3' });
+                    const audioUrl = URL.createObjectURL(audioBlob);
+                    const audio = new Audio(audioUrl);
+                    
+                    audio.onplay = () => {
+                        status.textContent = '🎵 Playing authentic Punjabi pronunciation...';
+                    };
+                    
+                    audio.onended = () => {
+                        status.textContent = '✅ Perfect! Google TTS is working with authentic Punjabi voices! 🎯';
+                        URL.revokeObjectURL(audioUrl);
+                    };
+                    
+                    await audio.play();
+                }
+
+            } catch (error) {
+                status.textContent = `❌ Error: ${error.message}`;
+            }
+        }
+
+        function calculateCost() {
+            const daily = parseInt(document.getElementById('dailyTranslations').value) || 100;
+            const words = parseInt(document.getElementById('averageWords').value) || 10;
+            
+            const monthlyTranslations = daily * 30;
+            const averageCharsPerWord = 6; // Including spaces and punctuation
+            const monthlyCharacters = monthlyTranslations * words * averageCharsPerWord;
+            
+            const freeLimit = 1000000; // 1 million characters free per month
+            const costPerMillion = 4; // $4 per million characters
+            
+            let monthlyCost = 0;
+            if (monthlyCharacters > freeLimit) {
+                const billableCharacters = monthlyCharacters - freeLimit;
+                monthlyCost = (billableCharacters / 1000000) * costPerMillion;
+            }
+            
+            const result = document.getElementById('costResult');
+            result.innerHTML = `
+Monthly usage: ${monthlyCharacters.toLocaleString()} characters
+Free tier covers: ${Math.min(monthlyCharacters, freeLimit).toLocaleString()} characters
+Monthly cost: $${monthlyCost.toFixed(2)}
+${monthlyCost === 0 ? '🎉 Completely free!' : monthlyCost < 1 ? '💚 Very affordable!' : '💙 Professional usage'}
+            `;
+        }
+
+        function openVoiceApp() {
+            window.open('http://localhost:3000/google-tts-voice.html', '_blank');
+        }
+
+        function openOriginalApp() {
+            window.open('http://localhost:3000/voice-to-voice.html', '_blank');
+        }
+    </script>
+</body>
+</html>
