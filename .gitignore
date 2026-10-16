@@ -4,6 +4,8 @@
 /node_modules
 /.pnp
 .pnp.js
+.venv-bench/
+bench_output.txt
 
 # Testing
 /coverage
@@ -41,6 +43,10 @@ _debug_last_ocr.png
 # also has no Git LFS set up, and GitHub hard-blocks any file over 100MB).
 models/
 
+# Test audio fixtures / generated benchmark output dumps - not source.
+*.wav
+*.mp3
+indic_translate_results.json
 
 # OSX
 #

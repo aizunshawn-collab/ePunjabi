@@ -9,3 +9,6 @@ src
 __pycache__
 *.pyc
 .vscode
+# Local model weights - fetched fresh from Hugging Face at Docker build time
+# instead (see Dockerfile), so these shouldn't bloat the build context.
+models

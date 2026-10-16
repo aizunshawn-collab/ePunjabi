@@ -1,14 +1,20 @@
 """
 FREE AI Translation Backend Server
-Uses AI4Bharat's IndicTrans2 + OpenAI Whisper
-IndicTrans2 is purpose-built for English<->Indic languages (incl. Punjabi) and
-outperforms both NLLB-200 and Google Translate on Indic pairs, especially on
-longer/more complex sentences, since it's trained on a much larger and cleaner
-English-Indic parallel corpus (BPCC) instead of a generic 200-language dataset.
+Translation runs on IndicTrans2 (CTranslate2, CPU-friendly int8 quantized
+inference, no GPU required). IndicTrans2 is purpose-built for English<->Indic
+languages (incl. Punjabi) and outperforms both NLLB-200 and Google Translate
+on Indic pairs, especially on longer/more complex sentences, since it's
+trained on a much larger and cleaner English-Indic parallel corpus (BPCC)
+instead of a generic 200-language dataset.
+
+Speech recognition has no Whisper anywhere in it (removed 2026-10, see repo
+memory): English ASR is NVIDIA's Parakeet-unified-en-0.6b (ONNX, torch-free),
+Punjabi ASR is AI4Bharat's IndicConformer (native NeMo RNNT decoder, torch),
+and spoken-language auto-detection for 'auto'-mode requests is SpeechBrain's
+VoxLingua107 ECAPA-TDNN language-ID model.
 
 Installation:
 pip install -r requirements.txt
-(requires the IndicTransToolkit package for pre/post-processing)
 
 Run:
 python ai_backend_server.py
@@ -16,27 +22,37 @@ python ai_backend_server.py
 Then update your app to use http://localhost:5000 instead of Google APIs
 """
 
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, g
 from flask_cors import CORS
-import torch
-from transformers import AutoTokenizer, AutoModelForSeq2SeqLM, pipeline
+import ctranslate2
+import sentencepiece as spm
+# faster_whisper itself is no longer used for transcription (no Whisper ASR
+# models remain in this project) - kept only for its decode_audio() utility
+# (PyAV-based, handles arbitrary audio containers like the app's .m4a
+# recordings), which every ASR path below relies on.
+from faster_whisper.audio import decode_audio
+import torch  # only used directly for the SpeechBrain language-ID model below; NeMo RNNT (indicconformer_nemo_asr.py) uses it internally too
 from indictrans_processor import IndicProcessor  # local port, see file docstring
-import whisper
+from punjabi_numerals import convert_number_words_to_digits  # pa-source numeral-word-to-digit fix, see file docstring
+from english_numerals import convert_number_words_to_digits as convert_english_number_words_to_digits  # Parakeet en-source numeral-word-to-digit fix, see file docstring
+from punjabi_name_corrections import fix_name_substitutions  # en->pa curated name-substitution fix, see file docstring
+from parakeet_name_corrections import correct_kaur_mishearing  # Parakeet sentence-final "Kaur"->"Kor"/"Kore"/"Core" fix, see file docstring
+from punjabi_alphanumeric_fix import fix_alphanumeric_codes  # en->pa digit-anchored code mangling fix, see file docstring
+from indicconformer_asr import IndicConformerASR  # torch-free ONNX Punjabi ASR, see file docstring
+from parakeet_unified_asr import ParakeetUnifiedASR  # torch-free ONNX English ASR (RNNT), see file docstring
 import pytesseract
 from PIL import Image, ImageOps
 import os
 import re
 import sys
 import json
-import types
-import importlib.util
 import base64
 import tempfile
 import io
 import time
 import unicodedata
+import threading
 import numpy as np
-import subprocess
 from indic_transliteration import sanscript
 from indic_transliteration.sanscript import transliterate
 
@@ -44,39 +60,6 @@ from indic_transliteration.sanscript import transliterate
 if sys.stdout.encoding != 'utf-8':
     sys.stdout.reconfigure(encoding='utf-8')
     sys.stderr.reconfigure(encoding='utf-8')
-
-# IndicTrans2's remote modeling code (trust_remote_code=True) still imports the
-# `transformers.onnx` module (removed in newer transformers) just to define an
-# unused ONNX-export config class. Stub it out so the import succeeds.
-if not importlib.util.find_spec("transformers.onnx"):
-    _onnx_stub = types.ModuleType("transformers.onnx")
-
-    class OnnxConfig:
-        pass
-
-    class OnnxSeq2SeqConfigWithPast(OnnxConfig):
-        pass
-
-    _onnx_stub.OnnxConfig = OnnxConfig
-    _onnx_stub.OnnxSeq2SeqConfigWithPast = OnnxSeq2SeqConfigWithPast
-    sys.modules["transformers.onnx"] = _onnx_stub
-
-    _onnx_utils_stub = types.ModuleType("transformers.onnx.utils")
-
-    def compute_effective_axis_dimension(dimension, fixed_dimension, num_token_to_add=0):
-        if dimension <= 0:
-            dimension = fixed_dimension
-        dimension -= num_token_to_add
-        return dimension
-
-    _onnx_utils_stub.compute_effective_axis_dimension = compute_effective_axis_dimension
-    sys.modules["transformers.onnx.utils"] = _onnx_utils_stub
-
-# Add FFmpeg to PATH if not already there
-ffmpeg_path = "C:\\ffmpeg\\ffmpeg-8.0-essentials_build\\bin"
-if os.path.exists(ffmpeg_path) and ffmpeg_path not in os.environ['PATH']:
-    os.environ['PATH'] = ffmpeg_path + os.pathsep + os.environ['PATH']
-    print(f"✅ Added FFmpeg to PATH: {ffmpeg_path}")
 
 # Tesseract OCR (used by /ocr, see below) ships as a separate system install,
 # not a pip package - pytesseract just shells out to the tesseract.exe binary.
@@ -98,7 +81,7 @@ CORS(app)  # Allow requests from your web app
 
 # --- Public-deployment hardening -------------------------------------------
 # This server has no built-in user accounts, and translation/speech requests
-# are expensive (1B-parameter model, Whisper large-v3). Once this is reachable
+# are expensive (translation model, Whisper speech recognition). Once this is reachable
 # from the internet rather than just a LAN, it needs at least a shared-secret
 # API key and basic rate limiting, or anyone who finds the URL can run up
 # compute costs or take the server down. Both are no-ops for local
@@ -116,7 +99,7 @@ app.config['MAX_CONTENT_LENGTH'] = 20 * 1024 * 1024  # 20 MB
 # provided). Not distributed/multi-process safe, but this server runs single-
 # process - good enough to stop one client from hammering it.
 _RATE_LIMIT_WINDOW_SECONDS = 60
-_RATE_LIMIT_MAX_REQUESTS = 20
+_RATE_LIMIT_MAX_REQUESTS = int(os.environ.get('RATE_LIMIT_MAX_REQUESTS', 20))
 _rate_limit_hits: dict = {}
 
 
@@ -137,6 +120,13 @@ _UNAUTHENTICATED_ROUTES = {'/health'}
 
 
 @app.before_request
+def _start_request_timer():
+    # Registered before the auth/rate-limit check below so latency is timed
+    # (and telemetry still logged) even for rejected (401/429) requests.
+    g.request_start_time = time.time()
+
+
+@app.before_request
 def _enforce_api_key_and_rate_limit():
     if request.path in _UNAUTHENTICATED_ROUTES:
         return None
@@ -149,6 +139,53 @@ def _enforce_api_key_and_rate_limit():
     return None
 
 
+# Structured one-line-per-request telemetry (issue #8) - logged to stdout,
+# which Fly.io already captures via `flyctl logs`, so no new logging infra
+# is needed. Deliberately logs only lengths/language pairs/scores, NEVER the
+# raw translated/transcribed text itself, to avoid putting user content in
+# logs.
+_TELEMETRY_ROUTES = {'/translate', '/speech-to-text', '/ocr'}
+
+
+@app.after_request
+def _log_telemetry(response):
+    try:
+        start = getattr(g, 'request_start_time', None)
+        entry = {
+            'ts': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
+            'route': request.path,
+            'status': response.status_code,
+            'latency_ms': round((time.time() - start) * 1000, 1) if start is not None else None,
+        }
+
+        if request.method == 'POST' and request.path in _TELEMETRY_ROUTES:
+            req_json = request.get_json(silent=True) or {}
+            resp_json = response.get_json(silent=True)
+
+            if request.path == '/translate':
+                entry['source_lang'] = req_json.get('source_lang')
+                entry['target_lang'] = req_json.get('target_lang')
+                entry['text_length'] = len(req_json.get('text') or '')
+                if resp_json:
+                    entry['confidence'] = resp_json.get('confidence')
+                    entry['retried'] = resp_json.get('retried', False)
+            elif request.path == '/speech-to-text':
+                entry['requested_language'] = req_json.get('language')
+                if resp_json:
+                    entry['detected_language'] = resp_json.get('language')
+                    entry['confidence'] = resp_json.get('confidence')
+                    entry['transcript_length'] = len(resp_json.get('transcript') or '')
+            elif request.path == '/ocr':
+                if resp_json:
+                    entry['detected_language'] = resp_json.get('language')
+                    entry['confidence'] = resp_json.get('confidence')
+
+        print(f"TELEMETRY {json.dumps(entry, ensure_ascii=False)}")
+    except Exception as e:
+        print(f"   ⚠️ Telemetry logging failed: {e}")
+    return response
+
+
 if not API_KEY:
     print("⚠️  BACKEND_API_KEY is not set - server is running with NO authentication.")
     print("   Fine for local/LAN development, but set BACKEND_API_KEY before exposing")
@@ -159,50 +196,34 @@ print("=" * 60)
 print("🚀 Starting AI Translation Server...")
 print("=" * 60)
 
-# Load IndicTrans2 Translation Models (AI4Bharat) - one model per direction,
-# since IndicTrans2 uses separate en->indic and indic->en checkpoints.
-device = "cuda" if torch.cuda.is_available() else "cpu"
-print(f"\n📥 Loading IndicTrans2 translation models (device: {device})...")
-print("   Using 1B models for maximum translation accuracy...")
-print("   (First time will download several GB per model, please wait...)")
-en_indic_ckpt = "ai4bharat/indictrans2-en-indic-1B"
-indic_en_ckpt = "ai4bharat/indictrans2-indic-en-1B"
-
-# Optional LoRA adapters produced by finetune_indictrans2_punjabi.ipynb (see
-# that notebook - trained on Colab, then the output adapter folder is copied
-# here and pointed to via these env vars). Absent by default; base models
-# are used unchanged until an adapter is actually trained and configured.
-EN_PA_LORA_DIR = os.environ.get("EN_PA_LORA_ADAPTER_DIR", "")
-PA_EN_LORA_DIR = os.environ.get("PA_EN_LORA_ADAPTER_DIR", "")
-
-
-def _maybe_apply_lora(base_model, adapter_dir, label):
-    if not adapter_dir:
-        return base_model
-    if not os.path.isdir(adapter_dir):
-        print(f"⚠️  {label} LoRA adapter dir not found: {adapter_dir} - using base model.")
-        return base_model
-    from peft import PeftModel
-    print(f"🔧 Applying {label} LoRA adapter from {adapter_dir}...")
-    return PeftModel.from_pretrained(base_model, adapter_dir).merge_and_unload()
-
+# Load IndicTrans2 Translation Models (AI4Bharat) via CTranslate2 - one model
+# per direction, since IndicTrans2 uses separate en->indic and indic->en
+# checkpoints. These are AI4Bharat's own official int8-quantized CT2-ported
+# checkpoints (see repo memory for the download source/process) - same
+# trained weights as the 1B HF models this server used to run via
+# `transformers`, just converted to a much faster/lighter CPU inference
+# engine (no GPU, no torch/transformers dependency needed at all).
+device = "cpu"
+print(f"\n📥 Loading IndicTrans2 translation models (CTranslate2, device: {device})...")
+EN_INDIC_CT2_DIR = os.path.join(os.path.dirname(__file__), 'models', 'indictrans2-en-indic-ct2-int8')
+INDIC_EN_CT2_DIR = os.path.join(os.path.dirname(__file__), 'models', 'indictrans2-indic-en-ct2-int8')
 
 try:
-    en_indic_tokenizer = AutoTokenizer.from_pretrained(en_indic_ckpt, trust_remote_code=True)
-    en_indic_model = AutoModelForSeq2SeqLM.from_pretrained(en_indic_ckpt, trust_remote_code=True).to(device)
-    en_indic_model = _maybe_apply_lora(en_indic_model, EN_PA_LORA_DIR, "en->pa")
-    en_indic_model.eval()
+    en_indic_translator = ctranslate2.Translator(EN_INDIC_CT2_DIR, device=device)
+    en_indic_sp_src = spm.SentencePieceProcessor(model_file=os.path.join(EN_INDIC_CT2_DIR, "vocab", "model.SRC"))
+    en_indic_sp_tgt = spm.SentencePieceProcessor(model_file=os.path.join(EN_INDIC_CT2_DIR, "vocab", "model.TGT"))
 
-    indic_en_tokenizer = AutoTokenizer.from_pretrained(indic_en_ckpt, trust_remote_code=True)
-    indic_en_model = AutoModelForSeq2SeqLM.from_pretrained(indic_en_ckpt, trust_remote_code=True).to(device)
-    indic_en_model = _maybe_apply_lora(indic_en_model, PA_EN_LORA_DIR, "pa->en")
-    indic_en_model.eval()
+    indic_en_translator = ctranslate2.Translator(INDIC_EN_CT2_DIR, device=device)
+    indic_en_sp_src = spm.SentencePieceProcessor(model_file=os.path.join(INDIC_EN_CT2_DIR, "vocab", "model.SRC"))
+    indic_en_sp_tgt = spm.SentencePieceProcessor(model_file=os.path.join(INDIC_EN_CT2_DIR, "vocab", "model.TGT"))
 
     indic_processor = IndicProcessor(inference=True)
-    print("✅ IndicTrans2 models loaded successfully! (Highest translation accuracy for Indic languages)")
+    print("✅ IndicTrans2 CT2 models loaded successfully! (same accuracy as before, CPU-fast)")
 except Exception as e:
-    print(f"❌ Error loading IndicTrans2: {e}")
-    print("   Please run: pip install -r requirements.txt")
+    print(f"❌ Error loading IndicTrans2 CT2 models: {e}")
+    print("   Expected model directories (see repo memory for how to obtain them):")
+    print(f"   {EN_INDIC_CT2_DIR}")
+    print(f"   {INDIC_EN_CT2_DIR}")
     exit(1)
 
 # --- Sentence/clause chunking helpers -----------------------------------
@@ -214,6 +235,22 @@ except Exception as e:
 # for genuinely very long sentences (safe up to ~86 words in testing, but
 # breaking down by ~116 words), so clause-splitting is kept only as a
 # fallback for sentences beyond that range.
+#
+# BUG FOUND 2026-10-09 (user reported pa->en voice translation silently
+# dropping most of the content, sometimes failing outright): real ASR
+# transcripts (confirmed via IndicConformer/NeMo-RNNT output - see repo
+# memory) NEVER contain sentence-ending punctuation (no "।", no "?") OR
+# commas, unlike typed/punctuated text. A longer spoken utterance therefore
+# arrives here as ONE giant unsplittable "sentence" with zero break points
+# for _CLAUSE_SPLIT_RE (needs English conjunctions) or the comma fallback to
+# find. Confirmed via direct testing against the live model: a 161-word
+# unpunctuated chunk silently translated only ~2 of 8 sentences' worth of
+# content (29 output words); a 259+ word unpunctuated chunk crashes outright
+# with `RuntimeError: No position encodings are defined for positions >=
+# 256` (IndicTrans2's hard SentencePiece-token position limit). FIX:
+# `_split_long_sentence` now hard-splits by fixed word windows as an
+# absolute last resort when no clause/comma break points exist at all, so
+# no chunk can ever reach either failure zone regardless of punctuation.
 MAX_CHUNK_WORDS = 80
 _SENTENCE_SPLIT_RE = re.compile(r'(?<=[.!?।])\s+')
 _CLAUSE_SPLIT_RE = re.compile(
@@ -222,17 +259,83 @@ _CLAUSE_SPLIT_RE = re.compile(
     re.IGNORECASE,
 )
 
+# BUG FOUND 2026-10-11 (user: "if you speak multiple sentences, the full text is
+# transcribed but the translation skips some of it"): the 80-word cap above does
+# not help because IndicTrans2 already drops whole sentences when several
+# unpunctuated sentences arrive as ONE chunk - measured on real held-out
+# transcripts joined into run-ons: 18% of sentences largely missing from the
+# English at 2 sentences/run-on, 33% at 5. Whisper used to mask this because it
+# emits punctuation; IndicConformer emits none. FIX: restore sentence breaks in
+# unpunctuated Punjabi after finite verbs/auxiliaries (token set picked from
+# train-split statistics: P(sentence-final | token) >= 0.6, plus the plain
+# auxiliaries), never before a continuation word (ਕਿ/ਜੋ/ਅਤੇ/...) and never
+# leaving a piece shorter than _PA_BREAK_MIN_PIECE_WORDS.
+_PA_SENTENCE_FINAL = frozenset(
+    'ਏ ਐ ਗਿਆ ਗਿਐ ਕੀਤੈ ਰਿਹੈ ਜਾਵੇਗਾ ਜਾਵੇਗੀ ਜਾਏਗਾ ਜਾਏਗੀ ਜਾਣਗੇ ਜਾਣਗੀਆਂ ਜਾਵੇ ਜਾਏ '
+    'ਸਨ ਦਿੱਤੈ ਕਰਨਗੇ ਕਰੇਗਾ ਕਰੇਗੀ ਹੋਵੇਗਾ ਹੋਵੇਗੀ ਹੋਣਗੇ ਸਕੇ ਲਿਐ ਚਾਹੀਦੈ ਹੋਇਐ ਸਕਦੈ '
+    'ਹੈ ਹਨ ਸੀ ਹਾਂ'.split()
+)
+_PA_CONTINUATION = frozenset(
+    'ਕਿ ਜੋ ਜਿਸ ਜਿਨ੍ਹਾਂ ਜਿੱਥੇ ਜਿਵੇਂ ਜਦੋਂ ਜਦ ਜਦਕਿ ਅਤੇ ਤੇ ਪਰ ਜਾਂ ਤਾਂ ਜੇ ਜੇਕਰ ਕਿਉਂਕਿ '
+    'ਭਾਵੇਂ ਵੀ ਹੀ ਨਹੀਂ ਨਾ'.split()
+)
+_PA_BREAK_MIN_TOTAL_WORDS = 10
+_PA_BREAK_MIN_PIECE_WORDS = 3
+
+
+def _restore_punjabi_breaks(sentence):
+    """Split an unpunctuated Gurmukhi run-on into sentence-like pieces (see
+    comment above). Returns [sentence] unchanged when it is short, not mostly
+    Gurmukhi, or has no safe break point."""
+    words = sentence.split()
+    if len(words) < _PA_BREAK_MIN_TOTAL_WORDS:
+        return [sentence]
+    letters = [c for c in sentence if c.isalpha()]
+    if not letters or sum(1 for c in letters if '\u0A00' <= c <= '\u0A7F') / len(letters) < 0.6:
+        return [sentence]
+    pieces, start = [], 0
+    for i, word in enumerate(words[:-1]):
+        if word not in _PA_SENTENCE_FINAL:
+            continue
+        if words[i + 1] in _PA_CONTINUATION:
+            continue
+        if i + 1 - start < _PA_BREAK_MIN_PIECE_WORDS:
+            continue
+        if len(words) - (i + 1) < _PA_BREAK_MIN_PIECE_WORDS:
+            continue
+        pieces.append(" ".join(words[start:i + 1]))
+        start = i + 1
+    pieces.append(" ".join(words[start:]))
+    return pieces
+
+
+def _hard_split_by_words(sentence, max_words=MAX_CHUNK_WORDS):
+    """Absolute last-resort split: break into fixed-size word windows. Needed
+    for real ASR transcripts of continuous speech, which contain no commas
+    or sentence-ending punctuation at all to split on (see comment above)."""
+    words = sentence.split()
+    return [" ".join(words[i:i + max_words]) for i in range(0, len(words), max_words)]
+
 
 def _split_long_sentence(sentence):
-    """Break an overly long/complex sentence into smaller clauses."""
+    """Break an overly long/complex sentence into smaller clauses, falling
+    back to a hard word-count split (see comment above) when no clause/comma
+    break points exist at all - guarantees every returned piece stays at or
+    under MAX_CHUNK_WORDS no matter how unpunctuated the input is."""
     if len(sentence.split()) <= MAX_CHUNK_WORDS:
         return [sentence]
     clauses = _CLAUSE_SPLIT_RE.split(sentence)
-    if len(clauses) > 1:
-        return clauses
-    # Fallback: split on any comma if the sentence is still too long
-    parts = re.split(r'(?<=,)\s+', sentence)
-    return parts if len(parts) > 1 else [sentence]
+    if len(clauses) == 1:
+        # Fallback: split on any comma if the sentence is still too long
+        clauses = re.split(r'(?<=,)\s+', sentence)
+    result = []
+    for clause in clauses:
+        if len(clause.split()) > MAX_CHUNK_WORDS:
+            result.extend(_hard_split_by_words(clause))
+        else:
+            result.append(clause)
+    return result
+
 
 
 def chunk_text(text):
@@ -244,7 +347,8 @@ def chunk_text(text):
     for sentence in sentences:
         if not sentence.strip():
             continue
-        chunks.extend(_split_long_sentence(sentence))
+        for piece in _restore_punjabi_breaks(sentence):
+            chunks.extend(_split_long_sentence(piece))
     return [c.strip() for c in chunks if c.strip()]
 
 
@@ -304,41 +408,61 @@ def _fix_script_homoglyphs(text):
     return text
 
 
-def translate_chunks(chunks, source_lang, target_lang, num_beams=8, length_penalty=1.0):
-    """Translate a list of text chunks using the correct IndicTrans2 model
+def translate_chunks(chunks, source_lang, target_lang, num_beams=4, length_penalty=1.0):
+    """Translate a list of text chunks using the correct IndicTrans2 CT2 model
     for the given direction, then return the translated chunks in order.
     num_beams/length_penalty are exposed so a low-confidence result can be
-    retried with different search parameters (see /translate's retry logic)."""
+    retried with different search parameters (see /translate's retry logic).
+
+    LATENCY FIX (2026-10-03): default num_beams lowered from 8 to 4 - local
+    CT2 benchmarking showed beam=8 costs ~2.7s/call vs beam=4's ~1.5s (beams
+    1/2/4 all cluster around the same per-request floor; the real cost jump
+    starts at beam>=6), with every `verify:true` request (always-on in the
+    mobile app) paying this cost at least twice (forward + back-translation
+    inside compute_roundtrip_confidence), so this alone roughly halves the
+    common-case /translate latency. See repo memory for the full benchmark.
+
+    Pre/post-processing (normalize, script transliteration, glossary-adjacent
+    cleanup) is unchanged - still IndicProcessor. What's different from the
+    old transformers-based version is only the tokenize+generate+decode
+    middle step: SentencePiece encode -> add IndicTrans2's language-tag
+    tokens -> ctranslate2.Translator.translate_batch() -> SentencePiece
+    decode. This exactly mirrors AI4Bharat's own official CT2 inference
+    recipe (see inference/engine.py in the IndicTrans2 repo)."""
     lang_map = {'en': 'eng_Latn', 'pa': 'pan_Guru'}
     src = lang_map.get(source_lang, 'eng_Latn')
     tgt = lang_map.get(target_lang, 'pan_Guru')
 
     if source_lang == 'en':
-        tokenizer, model = en_indic_tokenizer, en_indic_model
+        translator, sp_src = en_indic_translator, en_indic_sp_src
     else:
-        tokenizer, model = indic_en_tokenizer, indic_en_model
+        translator, sp_src = indic_en_translator, indic_en_sp_src
 
-    batch = indic_processor.preprocess_batch(chunks, src_lang=src, tgt_lang=tgt)
-    inputs = tokenizer(batch, truncation=True, padding="longest", return_tensors="pt").to(device)
+    # IndicProcessor.preprocess_batch already prepends "{src} {tgt} " to each
+    # sentence (needed by the old HF tokenizer path) - but AI4Bharat's CT2
+    # convention adds the language tags AFTER SentencePiece encoding, as
+    # their own separate un-split tokens. Strip the plain-text prefix back
+    # off here so it can be re-added post-SPM in the right place.
+    preprocessed = indic_processor.preprocess_batch(chunks, src_lang=src, tgt_lang=tgt)
+    prefix = f"{src} {tgt} "
+    stripped = [s[len(prefix):] if s.startswith(prefix) else s for s in preprocessed]
 
-    with torch.no_grad():
-        generated_tokens = model.generate(
-            **inputs,
-            use_cache=True,
-            min_length=0,
-            max_length=320,
-            num_beams=num_beams,  # wider beam search = more accurate (slower)
-            length_penalty=length_penalty,
-            repetition_penalty=1.3,   # discourage repeated/looping phrases
-            no_repeat_ngram_size=3,   # forbid repeating any 3-word sequence
-        )
+    spm_encoded = [" ".join(sp_src.encode(s, out_type=str)) for s in stripped]
+    tagged = [f"{src} {tgt} {s}" for s in spm_encoded]
+    tokenized_sents = [t.strip().split(" ") for t in tagged]
 
-    with tokenizer.as_target_tokenizer():
-        decoded = tokenizer.batch_decode(
-            generated_tokens.detach().cpu(),
-            skip_special_tokens=True,
-            clean_up_tokenization_spaces=True,
-        )
+    translation_results = translator.translate_batch(
+        tokenized_sents,
+        beam_size=num_beams,
+        length_penalty=length_penalty,
+        repetition_penalty=1.3,   # discourage repeated/looping phrases
+        no_repeat_ngram_size=3,   # forbid repeating any 3-word sequence
+        max_decoding_length=320,
+        max_input_length=0,      # no extra truncation beyond chunking upstream
+    )
+    decoded = [" ".join(r.hypotheses[0]) for r in translation_results]
+    # Undo SentencePiece's "_" word-boundary marker to get plain text back.
+    decoded = [d.replace(" ", "").replace("\u2581", " ").strip() for d in decoded]
 
     result = indic_processor.postprocess_batch(decoded, lang=tgt)
     if tgt == 'pan_Guru':
@@ -521,6 +645,14 @@ GLOSSARY = {
         'ਮੈਨੂੰ ਮਦਦ ਚਾਹੀਦੀ ਹੈ': 'I need help',
         'ਮੈਂ ਗੁਆਚ ਗਿਆ ਹਾਂ': 'I am lost',
         'ਮੈਂ ਗੁਆਚ ਗਈ ਹਾਂ': 'I am lost',
+        'ਮੈਂ ਥੱਕਿਆ ਹੋਇਆ ਹਾਂ': 'I am tired',
+        'ਮੈਂ ਥੱਕੀ ਹੋਈ ਹਾਂ': 'I am tired',
+        'ਮੈਂ ਆ ਗਿਆ ਹਾਂ': 'I have arrived',
+        'ਮੈਂ ਆ ਗਈ ਹਾਂ': 'I have arrived',
+        'ਮੈਂ ਭੁੱਲ ਗਿਆ': 'I forgot',
+        'ਮੈਂ ਭੁੱਲ ਗਈ': 'I forgot',
+        'ਮੈਂ ਉੱਥੇ ਗਿਆ': 'I went there',
+        'ਮੈਂ ਉੱਥੇ ਗਈ': 'I went there',
         'ਕੀ ਮੈਨੂੰ ਬਿੱਲ ਮਿਲ ਸਕਦਾ ਹੈ?': 'Can I have the bill, please?',
         'ਕਿਰਪਾ ਕਰਕੇ ਬਾਕੀ ਪੈਸੇ ਰੱਖੋ।': 'Please keep the change.',
         'ਮੇਰਾ ਪਾਸਪੋਰਟ ਹਵਾਈ ਅੱਡੇ ਉੱਤੇ ਗੁੰਮ ਹੋ ਗਿਆ।': 'I lost my passport at the airport.',
@@ -542,6 +674,16 @@ GLOSSARY = {
 GENDERED_GLOSSARY = {
     ('en', 'pa'): {
         'I am lost': {'m': 'ਮੈਂ ਗੁਆਚ ਗਿਆ ਹਾਂ', 'f': 'ਮੈਂ ਗੁਆਚ ਗਈ ਹਾਂ'},
+        # The 4 entries below were sourced from the model's OWN masculine-
+        # default output (not hand-typed), then the feminine form derived via
+        # the standard Punjabi ਿਆ/ਗਿਆ (masc.) -> ੀ/ਗਈ (fem.) agreement pattern
+        # already used above, and confirmed via a pa->en back-translation
+        # round-trip matching the original English meaning before being
+        # hardcoded (see repo memory for the verification transcript).
+        'I am tired': {'m': 'ਮੈਂ ਥੱਕਿਆ ਹੋਇਆ ਹਾਂ', 'f': 'ਮੈਂ ਥੱਕੀ ਹੋਈ ਹਾਂ'},
+        'I have arrived': {'m': 'ਮੈਂ ਆ ਗਿਆ ਹਾਂ', 'f': 'ਮੈਂ ਆ ਗਈ ਹਾਂ'},
+        'I forgot': {'m': 'ਮੈਂ ਭੁੱਲ ਗਿਆ', 'f': 'ਮੈਂ ਭੁੱਲ ਗਈ'},
+        'I went there': {'m': 'ਮੈਂ ਉੱਥੇ ਗਿਆ', 'f': 'ਮੈਂ ਉੱਥੇ ਗਈ'},
     },
 }
 
@@ -665,10 +807,21 @@ def _words_for_overlap(text):
     """Tokenize text for confidence scoring: expand English contractions and
     drop punctuation (via \\w+, which also strips the Gurmukhi danda/double
     danda attached to a sentence's last word) so cosmetic differences don't
-    get counted as meaning mismatches."""
+    get counted as meaning mismatches.
+
+    \\w alone is NOT enough for Gurmukhi: Python's Unicode \\w matches
+    Letter/Number categories but not Mark (dependent vowel signs/matras,
+    virama, etc.), so a plain \\w+ regex fragments a single Gurmukhi word
+    like "ਮੈਨੂੰ" into several meaningless pieces ('ਮ', 'ਨ', ...) at each
+    matra - silently making every Punjabi confidence score meaningless
+    (discovered while investigating issue #4, see repo memory). Adding the
+    whole Gurmukhi Unicode block (U+0A00-U+0A7F, which covers consonants,
+    independent vowels, matras, virama and nukta) to the character class
+    keeps a word's matras attached to its base letters.
+    """
     lowered = text.lower()
     expanded = _CONTRACTIONS_RE.sub(lambda m: _CONTRACTIONS[m.group(0)], lowered)
-    return set(re.findall(r"\w+", expanded, flags=re.UNICODE))
+    return set(re.findall(r"[\w\u0A00-\u0A7F]+", expanded, flags=re.UNICODE))
 
 
 def compute_roundtrip_confidence(original_text, source_lang, target_lang, translated_text):
@@ -694,6 +847,23 @@ def compute_roundtrip_confidence(original_text, source_lang, target_lang, transl
         back_translation = back_chunks[0] if back_chunks else ''
         original_words = _words_for_overlap(original_text)
         back_words = _words_for_overlap(back_translation)
+
+        # Code-switched input (e.g. a Punjabi sentence with an embedded
+        # English loanword like "office") often gets that loanword correctly
+        # carried through on the FORWARD translation, but translating AGAIN
+        # back to the source language tends to localize it to a native
+        # synonym ("ਦਫ਼ਤਰ") - a sign of a healthy, idiomatic translation, not
+        # dropped meaning. Left alone, that loanword is a guaranteed,
+        # unavoidable mismatch in the round-trip comparison every time. If a
+        # Latin-script source token already appears verbatim in the
+        # (already-produced) forward translation, trust that direct signal
+        # instead of penalizing the back-translation for localizing it.
+        forward_lower = translated_text.lower()
+        for token in original_words:
+            if token.isascii() and token.isalpha() and token not in back_words:
+                if re.search(r'\b' + re.escape(token) + r'\b', forward_lower):
+                    back_words.add(token)
+
         union = original_words | back_words
         if not union:
             return 0.0, back_translation
@@ -703,52 +873,167 @@ def compute_roundtrip_confidence(original_text, source_lang, target_lang, transl
         print(f"   ⚠️ Round-trip confidence check failed: {e}")
         return None, None
 
-# Load Whisper Speech Recognition Model
-# Using 'large-v3' model for MAXIMUM ACCURACY (95%+ for clear speech!)
-# This is the most accurate Whisper model available
-print("\n📥 Loading Whisper speech recognition model...")
-print("   Using 'large-v3' model for maximum accuracy (95%+)...")
-print("   (First time will download ~3GB, please wait...)")
-try:
-    whisper_model = whisper.load_model("large-v3")  # BEST ACCURACY: 90-95% for speech!
-    print("✅ Whisper 'large-v3' loaded successfully! (Highest accuracy speech recognition)")
-except Exception as e:
-    print(f"❌ Error loading Whisper: {e}")
-    print("   Please run: pip install openai-whisper")
-    exit(1)
+# Parakeet-unified-en-0.6b (RNNT, ONNX int8, torch-free) - the default (and
+# only) English ASR since Whisper was removed entirely (2026-10, see repo
+# memory). Measured 2026-10 on 200 random Svarah (Indian-accented English)
+# clips: WER 7.58% vs 13.94% for Whisper small, and ~1.75x faster on CPU (see
+# parakeet_unified_asr.py docstring + repo memory). Emits punctuation and
+# casing. Loaded LAZILY on the first English request (~1GB RAM) so Punjabi-only
+# traffic never pays for it. DISABLE_PARAKEET_UNIFIED=1 disables it (no
+# fallback model exists for English anymore - the request just errors).
+PARAKEET_UNIFIED_DIR = os.path.join(os.path.dirname(__file__), 'models', 'parakeet-unified-en-onnx', 'onnx_int8')
+parakeet_unified_model = None
+_parakeet_unified_load_lock = threading.Lock()
+_parakeet_unified_load_failed = False
 
-# Load our custom fine-tuned Punjabi Whisper model, if present (see
-# finetune_whisper_punjabi.py). This is a separate Hugging Face transformers
-# checkpoint (not compatible with the openai-whisper package above), so it's
-# loaded via a transformers ASR pipeline and used only for Punjabi audio -
-# English/auto-detect requests keep using the openai-whisper model above.
-PUNJABI_WHISPER_MODEL_DIR = os.path.join(os.path.dirname(__file__), 'models', 'whisper-punjabi-final')
-punjabi_whisper_pipeline = None
-if os.path.isdir(PUNJABI_WHISPER_MODEL_DIR):
-    print("\n📥 Loading fine-tuned Punjabi Whisper model...")
+
+def get_parakeet_unified_model():
+    """Return the Parakeet-unified English model, loading it on first call (None if unavailable)."""
+    global parakeet_unified_model, _parakeet_unified_load_failed
+    if parakeet_unified_model is not None or _parakeet_unified_load_failed:
+        return parakeet_unified_model
+    if os.environ.get('DISABLE_PARAKEET_UNIFIED', '').strip() == '1':
+        _parakeet_unified_load_failed = True
+        return None
+    with _parakeet_unified_load_lock:
+        if parakeet_unified_model is None and not _parakeet_unified_load_failed:
+            if not os.path.isdir(PARAKEET_UNIFIED_DIR):
+                print(f"\nℹ️ No Parakeet-unified model found at {PARAKEET_UNIFIED_DIR} - no English ASR will be available.")
+                _parakeet_unified_load_failed = True
+                return None
+            print("\n📥 Loading Parakeet-unified-en-0.6b (ONNX int8) (first English request)...")
+            try:
+                parakeet_unified_model = ParakeetUnifiedASR(
+                    os.path.join(PARAKEET_UNIFIED_DIR, 'encoder.int8.onnx'),
+                    os.path.join(PARAKEET_UNIFIED_DIR, 'decoder_joint.int8.onnx'),
+                    os.path.join(PARAKEET_UNIFIED_DIR, 'tokenizer.model'),
+                    cpu_threads=4,
+                )
+                print("✅ Parakeet-unified loaded! Will be used for English transcription.")
+            except Exception as e:
+                import traceback
+                print(f"❌ Error loading Parakeet-unified: {e}\n{traceback.format_exc()}")
+                _parakeet_unified_load_failed = True
+    return parakeet_unified_model
+
+
+# Load AI4Bharat's IndicConformer (encoder+CTC-decoder, exported to ONNX, no
+# torch/NeMo needed at runtime - see indicconformer_asr.py docstring and repo
+# memory for the full investigation). Serves as the fallback Punjabi ASR when
+# the native NeMo RNNT model below isn't loaded. DISABLE_INDICCONFORMER=1 is
+# a quick rollback switch to disable this fallback (Punjabi requests then
+# depend entirely on NeMo RNNT below, erroring if that's also unavailable).
+INDICCONFORMER_DIR = os.path.join(os.path.dirname(__file__), 'models', 'indicconformer-punjabi-ctc-onnx')
+indicconformer_model = None
+if os.environ.get('DISABLE_INDICCONFORMER', '').strip() == '1':
+    print("\nℹ️ IndicConformer (ONNX CTC) disabled via DISABLE_INDICCONFORMER=1.")
+elif os.path.isdir(INDICCONFORMER_DIR):
+    print("\n📥 Loading IndicConformer Punjabi ASR model (ONNX)...")
     try:
-        # The tokenizer.json saved by the (newer) Kaggle environment isn't
-        # readable by the tokenizers version pinned here for IndicTrans2
-        # compatibility. Fine-tuning doesn't change Whisper's vocabulary, so
-        # load the tokenizer/feature extractor from the original base model
-        # instead, and only take the fine-tuned weights from the local folder.
-        from transformers import WhisperProcessor, WhisperForConditionalGeneration
-        processor = WhisperProcessor.from_pretrained("openai/whisper-small")
-        punjabi_model = WhisperForConditionalGeneration.from_pretrained(PUNJABI_WHISPER_MODEL_DIR)
-        punjabi_whisper_pipeline = pipeline(
-            "automatic-speech-recognition",
-            model=punjabi_model,
-            tokenizer=processor.tokenizer,
-            feature_extractor=processor.feature_extractor,
-            device=0 if torch.cuda.is_available() else -1,
+        indicconformer_model = IndicConformerASR(
+            os.path.join(INDICCONFORMER_DIR, 'model.onnx'),
+            os.path.join(INDICCONFORMER_DIR, 'tokenizer_pa.model'),
+            cpu_threads=4,
         )
-        print("✅ Fine-tuned Punjabi Whisper model loaded! Will be used for Punjabi transcription.")
+        print("✅ IndicConformer loaded! Will be used for Punjabi transcription (unless NeMo RNNT below is also available).")
     except Exception as e:
-        print(f"⚠️ Could not load fine-tuned Punjabi Whisper model: {e}")
-        print("   Falling back to Whisper 'large-v3' for Punjabi transcription.")
+        print(f"⚠️ Could not load IndicConformer model: {e}")
 else:
-    print(f"\nℹ️ No fine-tuned Punjabi Whisper model found at {PUNJABI_WHISPER_MODEL_DIR}")
-    print("   Using Whisper 'large-v3' for Punjabi transcription.")
+    print(f"\nℹ️ No IndicConformer model found at {INDICCONFORMER_DIR}")
+
+# Load IndicConformer's NATIVE RNNT decoder via AI4Bharat's NeMo fork (torch)
+# - closes the CTC-vs-RNNT accuracy gap measured in the 2026-09-27
+# investigation (see indicconformer_nemo_asr.py docstring + repo memory
+# "OPTION 1 IMPLEMENTED" for the full rationale). This is a deliberate,
+# narrow, Punjabi-ASR-ONLY exception to the project's broader torch-free
+# architecture. Takes priority over the ONNX CTC-only model above when
+# loaded - the PRIMARY Punjabi ASR model. DISABLE_NEMO_RNNT=1 is a quick
+# rollback switch to fall back to the ONNX CTC model above instead.
+INDICCONFORMER_NEMO_PATH = os.path.join(
+    os.path.dirname(__file__), 'models', 'indicconformer-nemo', 'indicconformer_stt_pa_hybrid_rnnt_large.nemo'
+)
+indicconformer_nemo_model = None
+if os.environ.get('DISABLE_NEMO_RNNT', '').strip() == '1':
+    print("\nℹ️ NeMo RNNT disabled via DISABLE_NEMO_RNNT=1 - using ONNX CTC for Punjabi transcription.")
+elif os.path.isfile(INDICCONFORMER_NEMO_PATH):
+    print("\n📥 Loading IndicConformer Punjabi ASR model (native NeMo RNNT, torch)...")
+    try:
+        from indicconformer_nemo_asr import IndicConformerNeMoASR
+        indicconformer_nemo_model = IndicConformerNeMoASR(INDICCONFORMER_NEMO_PATH)
+        print("✅ IndicConformer (NeMo RNNT) loaded! Will be used for Punjabi transcription.")
+    except Exception as e:
+        print(f"⚠️ Could not load IndicConformer NeMo RNNT model: {e}")
+        print("   Falling back to ONNX CTC for Punjabi transcription.")
+else:
+    print(f"\nℹ️ No IndicConformer NeMo checkpoint found at {INDICCONFORMER_NEMO_PATH}")
+    print("   Using ONNX CTC for Punjabi transcription.")
+
+# Load SpeechBrain's VoxLingua107 ECAPA-TDNN spoken-language-ID model -
+# replaces Whisper's detect_language() for 'auto'-mode /speech-to-text
+# requests (Whisper removed entirely 2026-10, see repo memory). 107-language
+# coverage incl. Punjabi/Hindi/Urdu/English, 6.7% error rate on the
+# VoxLingua107 dev set. Reuses the torch install already present for NeMo
+# RNNT above - the marginal cost of this model is just itself (~86MB) plus
+# speechbrain/torchaudio/hyperpyyaml, not another full torch install.
+# DISABLE_SPEECHBRAIN_LID=1 disables it ('auto'-mode requests then error;
+# forced 'en'/'pa' requests are unaffected since they never need LID).
+LANGUAGE_ID_DIR = os.path.join(os.path.dirname(__file__), 'models', 'lang-id-voxlingua107-ecapa')
+language_id_model = None
+_language_id_load_lock = threading.Lock()
+_language_id_load_failed = False
+
+
+def get_language_id_model():
+    """Return the SpeechBrain VoxLingua107 language-ID model, loading it on first call."""
+    global language_id_model, _language_id_load_failed
+    if language_id_model is not None or _language_id_load_failed:
+        return language_id_model
+    if os.environ.get('DISABLE_SPEECHBRAIN_LID', '').strip() == '1':
+        _language_id_load_failed = True
+        return None
+    with _language_id_load_lock:
+        if language_id_model is None and not _language_id_load_failed:
+            if not os.path.isdir(LANGUAGE_ID_DIR):
+                print(f"\nℹ️ No language-ID model found at {LANGUAGE_ID_DIR} - 'auto' language mode will be unavailable.")
+                _language_id_load_failed = True
+                return None
+            print("\n📥 Loading SpeechBrain language-ID model (first 'auto'-mode request)...")
+            try:
+                from speechbrain.inference.classifiers import EncoderClassifier
+                from speechbrain.utils.fetching import LocalStrategy
+                # LocalStrategy.COPY avoids symlinking the local model dir into
+                # savedir's HF-cache-style layout - SpeechBrain's default
+                # SYMLINK strategy raises OSError: [WinError 1314] on Windows
+                # without Developer Mode/admin (confirmed via local testing);
+                # COPY works identically on Linux/Docker too, just uses a
+                # little more disk space, so it's used unconditionally rather
+                # than only on Windows.
+                language_id_model = EncoderClassifier.from_hparams(
+                    source=LANGUAGE_ID_DIR, savedir=LANGUAGE_ID_DIR, run_opts={'device': 'cpu'},
+                    local_strategy=LocalStrategy.COPY
+                )
+                print("✅ SpeechBrain language-ID model loaded!")
+            except Exception as e:
+                import traceback
+                print(f"❌ Error loading SpeechBrain language-ID model: {e}\n{traceback.format_exc()}")
+                _language_id_load_failed = True
+    return language_id_model
+
+
+def detect_spoken_language(audio_array):
+    """Run SpeechBrain VoxLingua107 LID on a mono float32 16kHz numpy array.
+    Returns (lang, iso_code, confidence) where lang is 'en' or 'pa' - Hindi
+    and Urdu are grouped with Punjabi, the same heuristic the old
+    Whisper-based LID used, since they're the languages most often confused
+    with Punjabi (and this app only supports en/pa anyway)."""
+    model = get_language_id_model()
+    audio_tensor = torch.from_numpy(audio_array).unsqueeze(0)
+    _, log_likelihood, _, text_lab = model.classify_batch(audio_tensor)
+    iso_code = text_lab[0].split(':')[0].strip().lower()
+    confidence = float(log_likelihood.exp()[0])
+    lang = 'pa' if iso_code in ('pa', 'hi', 'ur') else 'en'
+    return lang, iso_code, confidence
+
 
 print("\n" + "=" * 60)
 print("✅ SERVER READY!")
@@ -769,7 +1054,15 @@ def health():
         'status': 'healthy',
         'models': {
             'translation': 'IndicTrans2 (1B, en-indic + indic-en)',
-            'speech': 'Whisper (large-v3)' + (' + fine-tuned Punjabi model' if punjabi_whisper_pipeline is not None else ''),
+            'speech': (
+                ('IndicConformer-NeMo-RNNT (Punjabi)' if indicconformer_nemo_model is not None
+                 else 'IndicConformer (Punjabi)' if indicconformer_model is not None
+                 else 'no Punjabi ASR model loaded')
+                + (' + Parakeet-unified (English)' if os.path.isdir(PARAKEET_UNIFIED_DIR)
+                   and os.environ.get('DISABLE_PARAKEET_UNIFIED', '').strip() != '1' else ' + no English ASR model loaded')
+                + (' + SpeechBrain VoxLingua107 (language-ID)' if os.path.isdir(LANGUAGE_ID_DIR)
+                   and os.environ.get('DISABLE_SPEECHBRAIN_LID', '').strip() != '1' else '')
+            ),
             'transliteration': 'IndicXlit'
         },
         'message': 'AI Translation Server is running!'
@@ -882,10 +1175,26 @@ def transliterate_text():
 # measured (see repo memory) - it produced no measurable accuracy gain, only
 # extra latency, so this was reverted back to the original tuning.
 _ENSEMBLE_CONFIDENCE_THRESHOLD = 0.6
+# pa-source round-trips score systematically lower than en-source ones under
+# the corrected (whole-word) Gurmukhi tokenization used by
+# compute_roundtrip_confidence (the old \w+-only tokenizer fragmented
+# Gurmukhi words at every matra, which inflated pa-source scores via bogus
+# single-character fragment overlap - see repo memory, issue #4). Benchmarked
+# the old vs new metric on TEST_SET+HELD_OUT_SET: en-source scores are
+# identical (back-translation there is also English, untouched by the
+# tokenizer fix), but pa-source scores dropped enough that the single 0.6
+# threshold would trigger ensemble retries noticeably more often for
+# genuinely-fine pa->en translations. A separate, lower threshold keeps the
+# retry rate calibrated to the now-more-accurate pa-source scores.
+_ENSEMBLE_CONFIDENCE_THRESHOLD_PA_SOURCE = 0.45
 _ENSEMBLE_GOOD_ENOUGH_THRESHOLD = 0.85
+# LATENCY FIX (2026-10-03): beam sizes lowered (12->6, 6->3) alongside the
+# new num_beams=4 default above - still one config above and one below the
+# default (preserving the "try a different search path" intent) but each
+# retry attempt is now meaningfully cheaper (see translate_chunks docstring).
 _ENSEMBLE_DECODING_CONFIGS = [
-    {'num_beams': 12, 'length_penalty': 0.8},
-    {'num_beams': 6, 'length_penalty': 1.4},
+    {'num_beams': 6, 'length_penalty': 0.8},
+    {'num_beams': 3, 'length_penalty': 1.4},
 ]
 
 
@@ -932,7 +1241,16 @@ def translate_text():
             return jsonify({'error': 'No text provided'}), 400
 
         text = normalize_text(text)
-        
+
+        # Punjabi ASR/typed input spells numbers out as words (e.g. "ਪੰਦਰਾਂ
+        # ਸੌ", "ਪੰਜਤਾਲੀ") which IndicTrans2 has been observed to mangle
+        # (see repo memory) - converting unambiguous number-word phrases to
+        # plain digits first lets the model simply copy them through intact.
+        # English->Punjabi is unaffected (English numerals are already
+        # digits by the time they reach here).
+        if source_lang == 'pa':
+            text = convert_number_words_to_digits(text)
+
         # Prevent same-language translation
         if source_lang == target_lang:
             print(f"\n⚠️ Same language translation attempted: {source_lang} → {target_lang}")
@@ -960,6 +1278,17 @@ def translate_text():
         translated_chunks = apply_glossary(chunks, translated_chunks, source_lang, target_lang, gender)
         translation = ' '.join(translated_chunks)
 
+        # IndicTrans2 has been observed to occasionally substitute a
+        # different, more common Punjabi name for a small set of specific
+        # names when a surname follows (e.g. "Harpreet Singh" translates as
+        # "Gurpreet Singh") even though the same name translates correctly
+        # on its own. Narrow, curated, post-translation-only fix - see
+        # punjabi_name_corrections.py docstring for the full rationale and
+        # why this is deliberately NOT a general proper-noun fix.
+        if source_lang == 'en' and target_lang == 'pa':
+            translation = fix_name_substitutions(text, translation)
+            translation = fix_alphanumeric_codes(text, translation)
+
         print(f"   Output: {translation[:100]}...")
         print("   ✅ Translation complete")
 
@@ -984,7 +1313,10 @@ def translate_text():
             # sometimes avoids whatever caused the model to drop/distort
             # meaning the first time. Stops early once a candidate is
             # confident enough, to avoid paying for configs that won't help.
-            if confidence is not None and confidence < _ENSEMBLE_CONFIDENCE_THRESHOLD:
+            ensemble_threshold = (
+                _ENSEMBLE_CONFIDENCE_THRESHOLD_PA_SOURCE if source_lang == 'pa' else _ENSEMBLE_CONFIDENCE_THRESHOLD
+            )
+            if confidence is not None and confidence < ensemble_threshold:
                 best_translation, best_chunks = translation, translated_chunks
                 best_confidence, best_back = confidence, back_translation
                 for config in _ENSEMBLE_DECODING_CONFIGS:
@@ -1007,6 +1339,8 @@ def translate_text():
                     print(f"   ✅ Ensemble improved confidence: {confidence} → {best_confidence}")
                     translation, translated_chunks = best_translation, best_chunks
                     confidence, back_translation = best_confidence, best_back
+                    if source_lang == 'en' and target_lang == 'pa':
+                        translation = fix_alphanumeric_codes(text, translation)
                     response_payload['translation'] = translation
                     response_payload['retried'] = True
 
@@ -1023,20 +1357,12 @@ def translate_text():
         return jsonify({'error': str(e), 'details': error_details}), 500
 
 
-# Short list of common words/greetings in each language, passed to Whisper as
-# initial_prompt to bias its decoder toward the right vocabulary and script.
-_WHISPER_VOCAB_PROMPT = {
-    'en': 'Hello, thank you, please, water, house, work, family, friend, today.',
-    'pa': 'ਸਤ ਸ੍ਰੀ ਅਕਾਲ, ਧੰਨਵਾਦ, ਕਿਰਪਾ ਕਰਕੇ, ਪਾਣੀ, ਘਰ, ਕੰਮ, ਪਰਿਵਾਰ, ਦੋਸਤ, ਅੱਜ।',
-}
-
-
 @app.route('/speech-to-text', methods=['POST'])
 def speech_to_text():
     """
-    Convert speech audio to text using Whisper
-    Supports both English and Punjabi automatic detection
-    
+    Convert speech audio to text.
+    Supports both English and Punjabi, plus automatic language detection.
+
     Request body:
     {
         "audio": "base64_encoded_audio_data",
@@ -1056,91 +1382,95 @@ def speech_to_text():
         # Decode base64 audio
         audio_data = base64.b64decode(audio_base64)
         print(f"   📊 Audio data size: {len(audio_data)} bytes")
-        
-        # Check if ffmpeg is installed
-        try:
-            result = subprocess.run(['ffmpeg', '-version'], capture_output=True, check=True, text=True)
-            print(f"   ✅ FFmpeg found: {result.stdout.split()[2]}")
-        except (FileNotFoundError, subprocess.CalledProcessError) as e:
-            print(f"   ❌ FFmpeg not found: {str(e)}")
-            return jsonify({
-                'error': 'FFmpeg not installed',
-                'message': 'Whisper requires FFmpeg. Please restart the server after FFmpeg installation.',
-                'fallback': 'google'
-            }), 503
-        
-        # Save to temporary file
+
+        # Save to temporary file. decode_audio() (from faster-whisper, see
+        # import comment at top of file) decodes audio itself via PyAV
+        # (statically bundled with ffmpeg's decoding libraries) - no system
+        # ffmpeg install required.
         with tempfile.NamedTemporaryFile(suffix='.webm', delete=False) as temp_audio:
             temp_audio.write(audio_data)
             temp_path = temp_audio.name
         
         try:
-            # MAXIMUM ACCURACY: Use best decoding parameters
-            print("   🎯 High-accuracy transcription (this may take 3-5 seconds)...")
+            print("   🎯 High-accuracy transcription (this may take a few seconds)...")
 
             # Honor the caller's language hint instead of always auto-detecting.
-            # Whisper's language auto-ID is unreliable on short/noisy clips and
-            # often misidentifies Punjabi as Hindi/Urdu (or vice versa), which
-            # then transcribes in the WRONG script entirely - a much bigger
-            # error than any per-word inaccuracy. Only fall back to auto-detect
-            # when the caller genuinely doesn't know the language.
-            whisper_language = {'en': 'en', 'pa': 'pa'}.get(language)
+            # Automatic language-ID is unreliable on short/noisy clips and can
+            # misidentify Punjabi as Hindi/Urdu (or vice versa), which then
+            # transcribes in the WRONG script entirely - a much bigger error
+            # than any per-word inaccuracy. Only auto-detect when the caller
+            # genuinely doesn't know the language.
+            asr_language = {'en': 'en', 'pa': 'pa'}.get(language)
 
-            # Use our fine-tuned Punjabi model when transcribing Punjabi and
-            # it's available - it's specifically trained on Punjabi speech,
-            # so it beats the general-purpose large-v3 model for this language.
-            if whisper_language == 'pa' and punjabi_whisper_pipeline is not None:
-                pipeline_result = punjabi_whisper_pipeline(
-                    temp_path,
-                    generate_kwargs={"language": "pa", "task": "transcribe"},
-                )
-                transcript = pipeline_result['text'].strip()
-                detected_lang = 'pa'
-                confidence = 0.5  # this pipeline doesn't expose a no-speech/confidence score
-                model_name = 'Whisper-punjabi-finetuned'
-            else:
-                result = whisper_model.transcribe(
-                    temp_path,
-                    language=whisper_language,
-                    fp16=False,
-                    beam_size=5,     # More thorough search (vs 1 for speed)
-                    best_of=5,       # Try multiple candidates (vs 1 for speed)
-                    temperature=0.0,  # Deterministic output (most accurate)
-                    condition_on_previous_text=False,  # avoid Whisper's known hallucination-loop failure mode
-                    # Priming text biases Whisper's decoder toward this vocabulary
-                    # and script, which helps it settle on correct Gurmukhi
-                    # spellings for common words instead of phonetic guesses.
-                    initial_prompt=_WHISPER_VOCAB_PROMPT.get(whisper_language),
-                )
+            if asr_language is None:
+                # Genuine "auto" request (no hint from the caller). Run a
+                # cheap, decode-free language-ID pass first (SpeechBrain's
+                # VoxLingua107 model), map the result with the same en/pa
+                # grouping used everywhere else in this file, then fall
+                # through to the normal forced-language dispatch below with
+                # a definite answer.
+                lid_model = get_language_id_model()
+                if lid_model is None:
+                    os.unlink(temp_path)
+                    return jsonify({'error': 'Language detection model failed to load - check server logs'}), 503
+                lid_audio = decode_audio(temp_path, sampling_rate=16000)
+                asr_language, detected_iso, detected_prob = detect_spoken_language(lid_audio)
+                print(f"   🔎 Auto-detected language: {detected_iso} ({detected_prob:.2f}) -> using '{asr_language}'")
 
-                transcript = result['text'].strip()
+            # IndicConformer is the only Punjabi ASR path (Whisper removed
+            # entirely, 2026-10). The native NeMo RNNT decoder (torch) is
+            # preferred over the torch-free ONNX CTC-only export when
+            # available - it closes the CTC-vs-RNNT accuracy gap documented
+            # in repo memory.
+            if asr_language == 'pa':
+                if indicconformer_nemo_model is None and indicconformer_model is None:
+                    os.unlink(temp_path)
+                    return jsonify({'error': 'No Punjabi ASR model is loaded - check server logs'}), 503
 
-                if whisper_language:
-                    # We forced the language, so trust it rather than re-deriving
-                    # it from Whisper's (now irrelevant) auto-detection field.
-                    detected_lang = whisper_language
+                audio_array = decode_audio(temp_path, sampling_rate=16000)
+                if indicconformer_nemo_model is not None:
+                    transcript, confidence = indicconformer_nemo_model.transcribe(audio_array)
+                    model_name = 'IndicConformer-NeMo-RNNT'
                 else:
-                    raw_detected = result.get('language', 'en')
-                    # Whisper might detect as 'hi' or other languages, map to en/pa
-                    detected_lang = 'pa' if raw_detected in ('pa', 'hi', 'ur') else 'en'
+                    transcript, confidence = indicconformer_model.transcribe(audio_array)
+                    model_name = 'IndicConformer'
+                detected_lang = 'pa'
 
-                # Calculate confidence
-                def get_confidence(result):
-                    if 'segments' in result and result['segments']:
-                        avg_no_speech = sum(s.get('no_speech_prob', 0) for s in result['segments']) / len(result['segments'])
-                        return 1.0 - avg_no_speech
-                    return 0.5
+                print(f"   ✅ Detected {detected_lang} (confidence: {confidence:.2f})")
+                print(f"   📝 Transcript: {transcript[:80]}...")
+                print("   ✅ Transcription complete")
 
-                confidence = get_confidence(result)
-                model_name = 'Whisper-large-v3'
-            
+                os.unlink(temp_path)
+
+                return jsonify({
+                    'transcript': transcript,
+                    'language': detected_lang,
+                    'confidence': confidence,
+                    'model': model_name
+                })
+
+            # Parakeet-unified (RNNT, ONNX int8, torch-free) is the only
+            # English ASR path (Whisper removed entirely, 2026-10). No
+            # fallback model exists - a missing model or a transcription
+            # failure both error out rather than silently degrading.
+            unified_model = get_parakeet_unified_model()
+            if unified_model is None:
+                os.unlink(temp_path)
+                return jsonify({'error': 'No English ASR model is loaded - check server logs'}), 503
+
+            audio_array = decode_audio(temp_path, sampling_rate=16000)
+            transcript, confidence = unified_model.transcribe(audio_array)
+            transcript = convert_english_number_words_to_digits(transcript)
+            transcript = correct_kaur_mishearing(transcript)
+            detected_lang = 'en'
+            model_name = 'Parakeet-unified-0.6b'
+
             print(f"   ✅ Detected {detected_lang} (confidence: {confidence:.2f})")
             print(f"   📝 Transcript: {transcript[:80]}...")
             print("   ✅ Transcription complete")
-            
-            # Clean up temp file
+
             os.unlink(temp_path)
-            
+
             return jsonify({
                 'transcript': transcript,
                 'language': detected_lang,

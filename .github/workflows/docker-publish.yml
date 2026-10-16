@@ -22,11 +22,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # The image now bakes in ~8-10GB of model weights (see Dockerfile) so
+      # The image bakes in ~6GB of CT2 model weights (see Dockerfile) so
       # cold-start workers don't download them at runtime. The default
-      # runner's ~14GB free disk isn't enough headroom for that plus the
-      # CUDA base image + pip installs, so remove large preinstalled
-      # toolchains this job doesn't use to free up space first.
+      # runner's ~14GB free disk isn't a lot of headroom for that plus pip
+      # installs, so remove large preinstalled toolchains this job doesn't
+      # use to free up space first.
       - name: Free up disk space
         run: |
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
@@ -44,11 +44,6 @@ jobs:
         with:
           context: .
           push: true
-          # IndicTrans2's 2 HF repos are gated - the Dockerfile's model-
-          # prefetch steps need this to authenticate (repo secret, not a
-          # build ARG, so it never lands in an image layer/history).
-          secrets: |
-            hf_token=${{ secrets.HF_TOKEN }}
           tags: |
             ghcr.io/${{ github.repository_owner }}/epunjabi-backend:latest
             ghcr.io/${{ github.repository_owner }}/epunjabi-backend:sha-${{ github.sha }}

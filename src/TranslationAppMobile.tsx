@@ -32,7 +32,7 @@ import {launchCamera, launchImageLibrary, Asset} from 'react-native-image-picker
 // developing against a local/LAN backend - the Settings-screen override
 // below always takes priority, so this only matters as the out-of-the-box
 // default for a fresh install.
-const PRODUCTION_BACKEND_URL = '';
+const PRODUCTION_BACKEND_URL = 'https://epunjabi-backend.fly.dev';
 // NOTE: On the Android emulator, "localhost" refers to the emulator itself,
 // not your computer, so 10.0.2.2 (the documented emulator alias for the host
 // machine's localhost) is used as the dev default there. On a REAL physical
@@ -110,13 +110,13 @@ const backendHeaders = (extra?: Record<string, string>): Record<string, string> 
   }
   return headers;
 };
-// Language detection itself is a cheap Unicode-range heuristic (no model),
-// so it's always fast - but this is the FIRST backend call translateAndSpeak
-// makes, so on a cold (scaled-to-zero) worker it's also the one that has to
-// wait out the worker's cold-start/model-load time before anything responds.
-// Keep this at least as generous as the expected cold-start time so a
-// sleeping worker isn't mistaken for the backend being unreachable.
-const AI_BACKEND_DETECT_TIMEOUT_MS = 45000;
+// Language detection is a cheap Unicode-range heuristic (no model), so it's
+// always fast. Translation runs a 1B-parameter model - on a machine without a
+// GPU this can legitimately take much longer, especially with "verify"
+// (round-trip confidence check) enabled below, which runs a second full
+// translation. Keep this generous so slow-but-working CPU inference doesn't
+// get mistaken for the backend being unreachable.
+const AI_BACKEND_DETECT_TIMEOUT_MS = 5000;
 // A single verify=true call already does 2 translation passes (forward +
 // back-translation), and low-confidence results trigger up to 2 more
 // ensemble-decoding retries on top of that - each pass on CPU-only 1B
@@ -201,13 +201,14 @@ const translateLocalAI = async (
   sourceLang: string,
   targetLang: string,
   verify: boolean = false,
+  gender: 'm' | 'f' = 'm',
 ): Promise<LocalTranslationResult> => {
   const response = await fetchWithTimeout(
     `${getBackendUrl()}/translate`,
     {
       method: 'POST',
       headers: backendHeaders({'Content-Type': 'application/json'}),
-      body: JSON.stringify({text, source_lang: sourceLang, target_lang: targetLang, verify}),
+      body: JSON.stringify({text, source_lang: sourceLang, target_lang: targetLang, verify, gender}),
     },
     AI_BACKEND_TRANSLATE_TIMEOUT_MS,
   );
@@ -372,8 +373,6 @@ interface UiStrings {
   detectingLanguage: string;
   translationErrorTitle: string;
   translationErrorMessage: string;
-  serverWakingUpTitle: string;
-  serverWakingUpMessage: string;
   speakingPunjabi: string;
   punjabiComplete: string;
   micPermissionTitle: string;
@@ -393,6 +392,10 @@ interface UiStrings {
   femalePremium: string;
   malePremium: string;
   testVoiceTitle: string;
+  genderSectionTitle: string;
+  genderHint: string;
+  genderMale: string;
+  genderFemale: string;
   serverSectionTitle: string;
   serverHint: string;
   serverPlaceholder: string;
@@ -460,8 +463,6 @@ const UI_STRINGS: Record<UiLang, UiStrings> = {
     detectingLanguage: 'Detecting language...',
     translationErrorTitle: 'Translation Error',
     translationErrorMessage: 'Failed to translate. Please try again.',
-    serverWakingUpTitle: 'Server Waking Up',
-    serverWakingUpMessage: 'The translation server was asleep and is starting up. Please try again in a moment.',
     speakingPunjabi: 'Speaking Punjabi...',
     punjabiComplete: 'Punjabi translation complete!',
     micPermissionTitle: 'Microphone Permission',
@@ -482,6 +483,11 @@ const UI_STRINGS: Record<UiLang, UiStrings> = {
     femalePremium: 'Female (Premium)',
     malePremium: 'Male (Premium)',
     testVoiceTitle: 'Test Punjabi Voice',
+    genderSectionTitle: 'Speaker Gender (for English→Punjabi)',
+    genderHint:
+      'Punjabi verb forms change based on the speaker\'s gender (e.g. "I am tired" / "I forgot"). Pick yours so these phrases translate correctly - this only affects English-to-Punjabi translation.',
+    genderMale: 'Male',
+    genderFemale: 'Female',
     serverSectionTitle: 'Translation Server Address',
     serverHint:
       'This app needs the AI translation server running on a computer (see ai_backend_server.py). On a real phone, enter that computer\'s LAN IP address and make sure the phone is on the same Wi-Fi network, e.g. http://192.168.1.50:5000',
@@ -548,8 +554,6 @@ const UI_STRINGS: Record<UiLang, UiStrings> = {
     detectingLanguage: 'ਭਾਸ਼ਾ ਦੀ ਪਛਾਣ ਹੋ ਰਹੀ ਹੈ...',
     translationErrorTitle: 'ਅਨੁਵਾਦ ਗਲਤੀ',
     translationErrorMessage: 'ਅਨੁਵਾਦ ਕਰਨ ਵਿੱਚ ਅਸਫਲ। ਕਿਰਪਾ ਕਰਕੇ ਦੁਬਾਰਾ ਕੋਸ਼ਿਸ਼ ਕਰੋ।',
-    serverWakingUpTitle: 'ਸਰਵਰ ਚਾਲੂ ਹੋ ਰਿਹਾ ਹੈ',
-    serverWakingUpMessage: 'ਅਨੁਵਾਦ ਸਰਵਰ ਸੁੱਤਾ ਹੋਇਆ ਸੀ ਅਤੇ ਹੁਣ ਚਾਲੂ ਹੋ ਰਿਹਾ ਹੈ। ਕਿਰਪਾ ਕਰਕੇ ਥੋੜ੍ਹੀ ਦੇਰ ਵਿੱਚ ਦੁਬਾਰਾ ਕੋਸ਼ਿਸ਼ ਕਰੋ।',
     speakingPunjabi: 'ਪੰਜਾਬੀ ਬੋਲ ਰਿਹਾ ਹੈ...',
     punjabiComplete: 'ਪੰਜਾਬੀ ਅਨੁਵਾਦ ਪੂਰਾ ਹੋ ਗਿਆ!',
     micPermissionTitle: 'ਮਾਈਕ੍ਰੋਫ਼ੋਨ ਦੀ ਇਜਾਜ਼ਤ',
@@ -570,6 +574,11 @@ const UI_STRINGS: Record<UiLang, UiStrings> = {
     femalePremium: 'ਔਰਤ (ਪ੍ਰੀਮੀਅਮ)',
     malePremium: 'ਮਰਦ (ਪ੍ਰੀਮੀਅਮ)',
     testVoiceTitle: 'ਪੰਜਾਬੀ ਆਵਾਜ਼ ਦੀ ਜਾਂਚ ਕਰੋ',
+    genderSectionTitle: 'ਬੋਲਣ ਵਾਲੇ ਦਾ ਲਿੰਗ (ਅੰਗਰੇਜ਼ੀ→ਪੰਜਾਬੀ ਲਈ)',
+    genderHint:
+      'ਪੰਜਾਬੀ ਕਿਰਿਆ ਰੂਪ ਬੋਲਣ ਵਾਲੇ ਦੇ ਲਿੰਗ ਤੇ ਨਿਰਭਰ ਕਰਦੇ ਹਨ (ਜਿਵੇਂ "ਮੈਂ ਥੱਕ ਗਿਆ/ਗਈ")। ਆਪਣਾ ਚੁਣੋ ਤਾਂ ਜੋ ਇਹ ਵਾਕ ਸਹੀ ਅਨੁਵਾਦ ਹੋਣ - ਇਹ ਸਿਰਫ਼ ਅੰਗਰੇਜ਼ੀ ਤੋਂ ਪੰਜਾਬੀ ਅਨੁਵਾਦ ਤੇ ਅਸਰ ਪਾਉਂਦਾ ਹੈ।',
+    genderMale: 'ਮਰਦ',
+    genderFemale: 'ਔਰਤ',
     serverSectionTitle: 'ਅਨੁਵਾਦ ਸਰਵਰ ਪਤਾ',
     serverHint:
       'ਇਸ ਐਪ ਨੂੰ ਕਿਸੇ ਕੰਪਿਊਟਰ ਤੇ ਚੱਲ ਰਹੇ AI ਅਨੁਵਾਦ ਸਰਵਰ ਦੀ ਲੋੜ ਹੈ (ai_backend_server.py ਦੇਖੋ)। ਅਸਲੀ ਫ਼ੋਨ ਤੇ, ਉਸ ਕੰਪਿਊਟਰ ਦਾ LAN IP ਪਤਾ ਦਰਜ ਕਰੋ ਅਤੇ ਯਕੀਨੀ ਬਣਾਓ ਕਿ ਫ਼ੋਨ ਉਸੇ ਵਾਈ-ਫਾਈ ਨੈੱਟਵਰਕ ਤੇ ਹੈ, ਜਿਵੇਂ http://192.168.1.50:5000',
@@ -681,6 +690,7 @@ const TranslationAppMobile = (): JSX.Element => {
   const [inputLanguage, setInputLanguage] = useState('en');
   const [outputLanguage, setOutputLanguage] = useState('pa');
   const [sttLanguageMode, setSttLanguageMode] = useState<'auto' | 'en-US' | 'pa-IN'>('auto');
+  const [speakerGender, setSpeakerGender] = useState<'m' | 'f'>('m');
   const [menuVisible, setMenuVisible] = useState(false);
   const [activeScreen, setActiveScreen] = useState<'home' | 'settings' | 'about'>('home');
   const [uiLanguage, setUiLanguage] = useState<UiLang>('en');
@@ -1007,18 +1017,17 @@ const TranslationAppMobile = (): JSX.Element => {
 
       const audioBase64 = await RNFS.readFile(VOICE_RECORDING_PATH, 'base64');
 
-      // Whisper's own language auto-detection is unreliable for Punjabi
-      // (often confuses it with Hindi/Urdu), so never send a bare 'auto' -
-      // always resolve to a concrete guess, same adaptive heuristic the
-      // on-device path uses (last detected language) when set to Auto.
-      const languageHint: 'en' | 'pa' =
+      // In Auto mode, send a genuine 'auto' - the backend runs its own
+      // decode-free language-ID pass before transcribing, which is far more
+      // reliable than reusing whichever language happened to be detected
+      // last time (that stale guess could easily be wrong for the CURRENT
+      // recording, forcing it through the wrong language-specific model).
+      const languageHint: 'auto' | 'en' | 'pa' =
         sttLanguageMode === 'pa-IN'
           ? 'pa'
           : sttLanguageMode === 'en-US'
             ? 'en'
-            : inputLanguage === 'pa'
-              ? 'pa'
-              : 'en';
+            : 'auto';
 
       const {transcript} = await transcribeLocalAI(audioBase64, languageHint);
       setIsProcessingSpeech(false);
@@ -1152,15 +1161,20 @@ const TranslationAppMobile = (): JSX.Element => {
 
       setStatus(T.translating(LANGUAGE_NAMES[sourceLang], LANGUAGE_NAMES[targetLang]));
 
-      // verify=true asks the backend to also translate the result back to
-      // the source language and score word overlap, so we can flag
-      // likely-inaccurate translations to the user. Costs roughly double
-      // the translation time (see AI_BACKEND_TRANSLATE_TIMEOUT_MS above).
+      // verify=true would also ask the backend to translate the result back
+      // to the source language and score word overlap, but that roughly
+      // doubles (or, with ensemble retries on a low-confidence score, can
+      // triple/quadruple) translation time on this CPU-only backend - see
+      // AI_BACKEND_TRANSLATE_TIMEOUT_MS above. Real users felt this latency
+      // directly (18-27s per translation on a physical device), so the
+      // real-time voice/text flow now uses the fast single-pass path and
+      // skips the round-trip confidence check entirely.
       const {translation: translated, confidence} = await translateLocalAI(
         text,
         sourceLang,
         targetLang,
-        true,
+        false,
+        speakerGender,
       );
 
       setTranslatedText(translated);
@@ -1176,17 +1190,10 @@ const TranslationAppMobile = (): JSX.Element => {
         setStatus(T.lowConfidenceWarning(String(confidence)));
       }
 
-    } catch (error: any) {
+    } catch (error) {
       console.error('Translation error:', error);
       setStatus(T.translationFailed(String(error)));
-      // A timed-out fetch (AbortError) almost always means the backend was
-      // asleep and still starting up, not a real failure - tell the user to
-      // just retry shortly instead of showing a generic error.
-      if (error?.name === 'AbortError') {
-        Alert.alert(T.serverWakingUpTitle, T.serverWakingUpMessage);
-      } else {
-        Alert.alert(T.translationErrorTitle, T.translationErrorMessage);
-      }
+      Alert.alert(T.translationErrorTitle, T.translationErrorMessage);
     } finally {
       setIsLoading(false);
     }
@@ -1514,6 +1521,28 @@ const TranslationAppMobile = (): JSX.Element => {
                 onPress={() => setSttLanguageMode('pa-IN')}>
                 <Icon name="language" size={16} color={theme.accent} style={styles.iconInline} />
                 <Text style={styles.voiceOptionText}>{T.punjabiOnly}</Text>
+              </TouchableOpacity>
+            </View>
+
+            <View style={styles.voiceSelector}>
+              <View style={styles.sectionTitleRow}>
+                <Icon name="wc" size={16} color={theme.textSecondary} style={styles.iconInline} />
+                <Text style={styles.sectionTitle}>{T.genderSectionTitle}</Text>
+              </View>
+              <Text style={styles.settingHint}>
+                {T.genderHint}
+              </Text>
+              <TouchableOpacity
+                style={[styles.voiceOption, speakerGender === 'm' && styles.voiceOptionSelected]}
+                onPress={() => setSpeakerGender('m')}>
+                <Icon name="person" size={16} color={theme.accent} style={styles.iconInline} />
+                <Text style={styles.voiceOptionText}>{T.genderMale}</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.voiceOption, speakerGender === 'f' && styles.voiceOptionSelected]}
+                onPress={() => setSpeakerGender('f')}>
+                <Icon name="person" size={16} color={theme.accent} style={styles.iconInline} />
+                <Text style={styles.voiceOptionText}>{T.genderFemale}</Text>
               </TouchableOpacity>
             </View>
 

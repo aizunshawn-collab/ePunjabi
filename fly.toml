@@ -12,7 +12,9 @@ primary_region = 'iad'
 [http_service]
   internal_port = 8080
   force_https = true
-  auto_stop_machines = 'stop'
+  # Suspend (not stop) preserves loaded-model memory state so resume is a
+  # snapshot restore (~0.25s measured) instead of a full re-boot/model-reload.
+  auto_stop_machines = 'suspend'
   auto_start_machines = true
   min_machines_running = 0
 
