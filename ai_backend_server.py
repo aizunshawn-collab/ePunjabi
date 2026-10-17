@@ -41,6 +41,7 @@ from punjabi_alphanumeric_fix import fix_alphanumeric_codes  # en->pa digit-anch
 from indicconformer_asr import IndicConformerASR  # torch-free ONNX Punjabi ASR, see file docstring
 from parakeet_unified_asr import ParakeetUnifiedASR  # torch-free ONNX English ASR (RNNT), see file docstring
 import pytesseract
+from ocr_processor import TESSERACT_LANG_MAP, ocr_with_confidence  # torch-free Tesseract OCR wrapper, see file docstring
 from PIL import Image, ImageOps
 import os
 import re
@@ -60,21 +61,6 @@ from indic_transliteration.sanscript import transliterate
 if sys.stdout.encoding != 'utf-8':
     sys.stdout.reconfigure(encoding='utf-8')
     sys.stderr.reconfigure(encoding='utf-8')
-
-# Tesseract OCR (used by /ocr, see below) ships as a separate system install,
-# not a pip package - pytesseract just shells out to the tesseract.exe binary.
-# Point pytesseract at whichever known Windows install location exists (the
-# UB Mannheim installer defaults to per-machine Program Files, but can also
-# install per-user under %LOCALAPPDATA%); if tesseract is already on PATH
-# this whole block is a harmless no-op.
-_TESSERACT_WIN_PATHS = [
-    r"C:\Program Files\Tesseract-OCR\tesseract.exe",
-    os.path.expandvars(r"%LOCALAPPDATA%\Programs\Tesseract-OCR\tesseract.exe"),
-]
-for _tesseract_path in _TESSERACT_WIN_PATHS:
-    if os.path.exists(_tesseract_path):
-        pytesseract.pytesseract.tesseract_cmd = _tesseract_path
-        break
 
 app = Flask(__name__)
 CORS(app)  # Allow requests from your web app
@@ -1493,60 +1479,7 @@ def speech_to_text():
         return jsonify({'error': str(e), 'details': error_details}), 500
 
 
-# Language codes accepted by Tesseract for this app's two supported languages.
-_TESSERACT_LANG_MAP = {'en': 'eng', 'pa': 'pan'}
 _MAX_OCR_IMAGE_BYTES = 10 * 1024 * 1024  # 10 MB, well under MAX_CONTENT_LENGTH
-
-
-# Fallback page-segmentation modes tried (in order) when Tesseract's default
-# full-page layout analysis (PSM 3) finds zero text - covers the common
-# "one big word/line filling the frame" case (e.g. a close-up phone photo),
-# where PSM 3's paragraph/column detection can fail entirely even though a
-# simpler assumption about the layout would succeed.
-# 6 = single uniform block of text, 7 = single text line, 8 = single word.
-_OCR_FALLBACK_PSMS = (6, 7, 8)
-
-
-def _run_tesseract(image, tesseract_lang, config=''):
-    """Run Tesseract once with the given config and return (text, avg_confidence)."""
-    data = pytesseract.image_to_data(image, lang=tesseract_lang, output_type=pytesseract.Output.DICT, config=config)
-    words = []
-    confidences = []
-    for text, conf in zip(data['text'], data['conf']):
-        text = text.strip()
-        if not text:
-            continue
-        words.append(text)
-        try:
-            conf_value = float(conf)
-        except (TypeError, ValueError):
-            conf_value = -1
-        if conf_value >= 0:
-            confidences.append(conf_value)
-    recognized_text = ' '.join(words)
-    avg_confidence = (sum(confidences) / len(confidences)) if confidences else 0.0
-    return recognized_text, avg_confidence
-
-
-def _ocr_with_confidence(image, tesseract_lang):
-    """Run Tesseract OCR for one language and return (text, avg_confidence).
-    avg_confidence is the mean of Tesseract's own per-word confidence scores
-    (0-100, -1 for non-text regions which are excluded) - used to pick the
-    better result between English and Punjabi when the caller doesn't know
-    which script the photo contains.
-
-    Falls back to alternate page-segmentation modes (see _OCR_FALLBACK_PSMS)
-    if the default full-page analysis finds no text at all - a close-up
-    photo of a single word/line can otherwise come back completely empty."""
-    recognized_text, avg_confidence = _run_tesseract(image, tesseract_lang)
-    if recognized_text:
-        return recognized_text, avg_confidence
-
-    for psm in _OCR_FALLBACK_PSMS:
-        fallback_text, fallback_confidence = _run_tesseract(image, tesseract_lang, config=f'--psm {psm}')
-        if fallback_text:
-            return fallback_text, fallback_confidence
-    return recognized_text, avg_confidence
 
 
 @app.route('/ocr', methods=['POST'])
@@ -1608,15 +1541,15 @@ def ocr_image():
             print(f"   ⚠️ Could not save debug image: {debug_err}")
 
         if language in ('en', 'pa'):
-            text, confidence = _ocr_with_confidence(image, _TESSERACT_LANG_MAP[language])
+            text, confidence = ocr_with_confidence(image, TESSERACT_LANG_MAP[language])
             detected_lang = language
         else:
             # Auto: Tesseract only recognizes text from the script(s) it's
             # told to look for, so run both languages and keep whichever
             # found more/more-confident text rather than silently missing
             # one script entirely.
-            en_text, en_confidence = _ocr_with_confidence(image, 'eng')
-            pa_text, pa_confidence = _ocr_with_confidence(image, 'pan')
+            en_text, en_confidence = ocr_with_confidence(image, 'eng')
+            pa_text, pa_confidence = ocr_with_confidence(image, 'pan')
             if pa_confidence > en_confidence and pa_text:
                 text, confidence, detected_lang = pa_text, pa_confidence, 'pa'
             else:

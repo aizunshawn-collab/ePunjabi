@@ -155,7 +155,7 @@ COPY --from=builder /opt/venv /opt/venv
 COPY --from=builder /app/models ./models
 ENV PATH="/opt/venv/bin:$PATH"
 
-COPY ai_backend_server.py indictrans_processor.py indicconformer_asr.py indicconformer_nemo_asr.py parakeet_unified_asr.py punjabi_numerals.py english_numerals.py punjabi_name_corrections.py parakeet_name_corrections.py punjabi_alphanumeric_fix.py supervisord.conf watchdog.sh ./
+COPY ai_backend_server.py indictrans_processor.py indicconformer_asr.py indicconformer_nemo_asr.py parakeet_unified_asr.py punjabi_numerals.py english_numerals.py punjabi_name_corrections.py parakeet_name_corrections.py punjabi_alphanumeric_fix.py ocr_processor.py supervisord.conf watchdog.sh ./
 RUN chmod +x watchdog.sh
 
 EXPOSE 8080
