@@ -8,20 +8,26 @@
     "lint": "eslint .",
     "start": "react-native start",
     "test": "jest",
+    "build:web": "vite build",
+    "dev:web": "vite",
     "postinstall": "npx jetify && patch-package"
   },
   "dependencies": {
     "@google-cloud/translate": "^8.0.0",
     "@react-native-async-storage/async-storage": "^1.19.3",
+    "@react-native-camera-roll/camera-roll": "^7.8.3",
     "@react-native-voice/voice": "^3.2.4",
     "cors": "^2.8.5",
     "express": "^5.1.0",
     "react": "18.2.0",
     "react-native": "0.72.6",
     "react-native-audio-recorder-player": "^3.6.12",
+    "react-native-document-picker": "^9.3.1",
     "react-native-fs": "^2.20.0",
     "react-native-image-picker": "^7.2.3",
+    "react-native-print": "^0.11.0",
     "react-native-safe-area-context": "^4.7.2",
+    "react-native-share": "^10.2.1",
     "react-native-tts": "^4.1.1",
     "react-native-vector-icons": "^10.0.0"
   },
@@ -34,6 +40,7 @@
     "@tsconfig/react-native": "^3.0.0",
     "@types/react": "^18.0.24",
     "@types/react-test-renderer": "^18.0.0",
+    "@vitejs/plugin-react": "^4.7.0",
     "babel-jest": "^29.2.1",
     "eslint": "^8.19.0",
     "jest": "^29.2.1",
@@ -41,9 +48,12 @@
     "metro-react-native-babel-preset": "0.76.8",
     "patch-package": "^8.0.1",
     "prettier": "^2.4.1",
+    "react-dom": "^18.2.0",
     "react-native-dotenv": "^3.4.11",
+    "react-native-web": "^0.19.13",
     "react-test-renderer": "18.2.0",
-    "typescript": "4.8.4"
+    "typescript": "4.8.4",
+    "vite": "^5.4.21"
   },
   "engines": {
     "node": ">=16"
