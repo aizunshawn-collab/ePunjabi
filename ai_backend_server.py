@@ -114,6 +114,14 @@ def _start_request_timer():
 
 @app.before_request
 def _enforce_api_key_and_rate_limit():
+    # Browsers send an unauthenticated OPTIONS preflight before the real
+    # cross-origin request - it never carries the custom X-API-Key header,
+    # so rejecting it here would make flask_cors's own CORS headers never
+    # reach the browser (a non-2xx preflight response fails CORS entirely,
+    # regardless of what headers are attached to it). The real request right
+    # after this preflight is still fully subject to the checks below.
+    if request.method == 'OPTIONS':
+        return None
     if request.path in _UNAUTHENTICATED_ROUTES:
         return None
     if request.path == '/_debug_raw_translate' and not ENABLE_DEBUG_ROUTES:
