@@ -11,6 +11,11 @@
         height: 100%;
         margin: 0;
       }
+      /* #root's child is react-native-web's root View (flex: 1), which only
+         stretches if #root itself is a flex container. */
+      #root {
+        display: flex;
+      }
       body {
         font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
       }
