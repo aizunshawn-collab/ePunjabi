@@ -5,7 +5,7 @@ const https = require('https');
 
 console.log('🔍 Google Translate API Activation Checker\n');
 
-const API_KEY = 'AIzaSyBvq4sD8FsJkhDATyHk0pCQJsT_cy35xVc';
+const API_KEY = process.env.GOOGLE_API_KEY || ''; // paste your own key via env var - never hardcode a real key here
 
 // Test 1: Check if API key works with language detection
 async function testLanguageDetection() {

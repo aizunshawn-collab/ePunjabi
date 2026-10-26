@@ -56,7 +56,7 @@
     <div id="log"></div>
     
     <script>
-        const API_KEY = 'AIzaSyBvq4sD8FsJkhDATyHk0pCQJsT_cy35xVc';
+        const API_KEY = localStorage.getItem('googleApiKey') || ''; // paste your own key - never hardcode a real key here
         let stream = null;
         let recorder = null;
         let chunks = [];

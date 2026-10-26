@@ -5,7 +5,7 @@ const https = require('https');
 
 console.log('🚀 Testing English-Punjabi Translation App...\n');
 
-const API_KEY = 'AIzaSyBvq4sD8FsJkhDATyHk0pCQJsT_cy35xVc';
+const API_KEY = process.env.GOOGLE_API_KEY || ''; // paste your own key via env var - never hardcode a real key here
 const TEST_TEXT = 'Hello, how are you?';
 
 async function testTranslation() {

@@ -413,12 +413,14 @@
         // Using Whisper 'large-v3' (95%+ accuracy) + NLLB 1.3B (92-95% accuracy)
         // Total time: 3-5 seconds (slower but professional-grade accuracy)
         // Accuracy: 90-95% overall (near-human translation quality!)
-        const USE_AI_SPEECH = false; // Whisper large-v3 for maximum speech accuracy
-        const USE_AI_TRANSLATION = false; // NLLB 1.3B for maximum translation accuracy
-        const AI_BACKEND_URL = 'http://localhost:5000'; // Your AI backend server
+        const USE_AI_SPEECH = true; // IndicConformer/Parakeet speech-to-text via our own backend
+        const USE_AI_TRANSLATION = true; // IndicTrans2 translation via our own backend
+        const AI_BACKEND_URL = 'https://epunjabi-backend.fly.dev'; // Production AI backend server
         
-        // Google API (for speech recognition and fallback)
-        let apiKey = 'AIzaSyBvq4sD8FsJkhDATyHk0pCQJsT_cy35xVc';
+        // Optional Google API key (voice output + Google-based fallback only) - never hardcode a
+        // real key here since this file is served publicly; paste your own in the browser console
+        // via localStorage.setItem('googleApiKey', '...') if you want those optional features.
+        let apiKey = localStorage.getItem('googleApiKey') || '';
         
         // ========================================
         

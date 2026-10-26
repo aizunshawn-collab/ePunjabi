@@ -14,7 +14,7 @@ app.use(express.static('.'));
 
 // Translation proxy endpoint
 app.post('/api/translate', async (req, res) => {
-    const API_KEY = 'AIzaSyBvq4sD8FsJkhDATyHk0pCQJsT_cy35xVc';
+    const API_KEY = process.env.GOOGLE_API_KEY || ''; // paste your own key via env var - never hardcode a real key here
     const API_URL = 'https://translation.googleapis.com/language/translate/v2';
     
     try {

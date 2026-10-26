@@ -206,7 +206,7 @@
         }
         
         async function testTranslation() {
-            const API_KEY = 'AIzaSyBvq4sD8FsJkhDATyHk0pCQJsT_cy35xVc';
+            const API_KEY = localStorage.getItem('googleApiKey') || ''; // paste your own key - never hardcode a real key here
             const API_URL = 'https://translation.googleapis.com/language/translate/v2';
             const testText = 'Hello, how are you?';
             
