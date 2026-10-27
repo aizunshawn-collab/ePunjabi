@@ -12,6 +12,7 @@ import {
   TextInput,
   Modal,
   StatusBar,
+  Image,
 } from 'react-native';
 import {SafeAreaView} from 'react-native-safe-area-context';
 import Icon from 'react-native-vector-icons/MaterialIcons';
@@ -21,6 +22,10 @@ import AudioRecorderPlayer from 'react-native-audio-recorder-player';
 import RNFS from 'react-native-fs';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import {launchCamera, launchImageLibrary, Asset} from 'react-native-image-picker';
+import DocumentPicker from 'react-native-document-picker';
+import Share from 'react-native-share';
+import RNPrint from 'react-native-print';
+import {CameraRoll} from '@react-native-camera-roll/camera-roll';
 
 // Local self-hosted AI backend (IndicTrans2 + Whisper, see ai_backend_server.py).
 // This app relies entirely on this backend for translation/detection - there
@@ -125,16 +130,32 @@ const AI_BACKEND_DETECT_TIMEOUT_MS = 5000;
 // ~44s in practice, so 60s was cutting it too close and caused real
 // AbortError timeouts - keep this generous.
 const AI_BACKEND_TRANSLATE_TIMEOUT_MS = 150000;
+// /confidence can also trigger the same ensemble re-decoding verify=true
+// does on /translate (see verify_and_improve_translation), so give it the
+// same generous budget - it runs in the background after the fast
+// translation is already shown, so a long wait here doesn't block the UI.
+const AI_BACKEND_CONFIDENCE_TIMEOUT_MS = 150000;
 // Whisper large-v3 with beam_size=5/best_of=5 on CPU is considerably slower
 // than a single-pass translation, so this gets a longer budget.
 const AI_BACKEND_SPEECH_TIMEOUT_MS = 90000;
 // Used only to decide, before recording starts, whether the backend is up -
-// kept short so the app doesn't make the user wait to find out it needs to
-// fall back to on-device recognition.
-const AI_BACKEND_HEALTH_TIMEOUT_MS = 2500;
+// kept short-ish so the app doesn't make the user wait too long to find out
+// it needs to fall back to on-device recognition, but long enough to
+// tolerate Fly.io waking a suspended machine (auto_stop_machines='suspend'
+// in fly.toml) - that resume is ~0.25s on the app side, but TLS handshake +
+// Fly's own resume orchestration over a real network can push well past the
+// 2.5s this used to be, causing false "unreachable" reports right after any
+// idle period.
+const AI_BACKEND_HEALTH_TIMEOUT_MS = 8000;
 // Tesseract OCR runs twice (once per language) when the caller doesn't know
 // which script the photo contains, so give it a generous budget.
 const AI_BACKEND_OCR_TIMEOUT_MS = 30000;
+// Document recreation translates every detected text block/line as a
+// SEPARATE IndicTrans2 call (one per paragraph for a photo, one per line
+// for a PDF), and a multi-page PDF repeats that per page - the per-call
+// cost that AI_BACKEND_TRANSLATE_TIMEOUT_MS budgets for compounds fast, so
+// this needs a much larger ceiling than any single-call request.
+const AI_BACKEND_DOCUMENT_TIMEOUT_MS = 300000;
 
 // Where the recorded voice clip is written before being uploaded. Living in
 // the app's private cache dir means no extra storage permission is needed.
@@ -188,6 +209,7 @@ const detectLanguageLocalAI = async (text: string): Promise<string> => {
 type LocalTranslationResult = {
   translation: string;
   confidence: number | null;
+  nameUncertain: boolean;
 };
 
 // Translate via the local AI backend (IndicTrans2). Throws if the backend is
@@ -224,12 +246,60 @@ const translateLocalAI = async (
   return {
     translation: data.translation,
     confidence: typeof data.confidence === 'number' ? data.confidence : null,
+    nameUncertain: data.name_uncertain === true,
   };
+};
+
+// Scores an already-displayed translation's round-trip confidence via the
+// /confidence endpoint - meant to be called AFTER the fast single-pass
+// translation is already shown/spoken, so the real-time flow's latency is
+// unaffected. If the score comes back low, the backend also tries ensemble
+// re-decoding in the same request (see verify_and_improve_translation's
+// docstring) and may return a better `translation` - the caller can then
+// silently upgrade what's on screen instead of only warning about it.
+// Returns confidence: null on any failure (network, 500, timeout) so a
+// caller can simply skip showing a warning rather than deal with an error.
+type BackgroundConfidenceResult = {
+  confidence: number | null;
+  translation?: string;
+  retried?: boolean;
+};
+
+const fetchConfidenceInBackground = async (
+  text: string,
+  sourceLang: string,
+  targetLang: string,
+  translation: string,
+  gender: 'm' | 'f',
+): Promise<BackgroundConfidenceResult> => {
+  try {
+    const response = await fetchWithTimeout(
+      `${getBackendUrl()}/confidence`,
+      {
+        method: 'POST',
+        headers: backendHeaders({'Content-Type': 'application/json'}),
+        body: JSON.stringify({text, source_lang: sourceLang, target_lang: targetLang, translation, gender}),
+      },
+      AI_BACKEND_CONFIDENCE_TIMEOUT_MS,
+    );
+    if (!response.ok) {
+      return {confidence: null};
+    }
+    const data = await response.json();
+    return {
+      confidence: typeof data.confidence === 'number' ? data.confidence : null,
+      translation: typeof data.translation === 'string' ? data.translation : undefined,
+      retried: data.retried === true,
+    };
+  } catch {
+    return {confidence: null};
+  }
 };
 
 type LocalTranscriptionResult = {
   transcript: string;
   language: string;
+  numeralUncertain: boolean;
 };
 
 // Transcribe a recorded audio clip via the local AI backend's Whisper
@@ -260,6 +330,7 @@ const transcribeLocalAI = async (
   return {
     transcript: data.transcript,
     language: data.language,
+    numeralUncertain: data.numeral_uncertain === true,
   };
 };
 
@@ -296,6 +367,59 @@ const scanPhotoLocalAI = async (
   return {
     text: data.text,
     language: data.language,
+  };
+};
+
+type LocalDocumentResult = {
+  outputType: 'image' | 'pdf';
+  data: string; // base64
+  sourceLang: string;
+  targetLang: string;
+};
+
+// Recreates a photographed/scanned document or PDF with its text replaced
+// by the translation - approximate position/size/color for photos and
+// scanned PDF pages (OCR + inpainting, see document_translator.py), or the
+// exact original font size/color for a PDF's real text layer (vector edit,
+// no rasterization). Powers the "Translate Document" feature - distinct
+// from scanPhotoLocalAI above, which only extracts plain text for the
+// normal translate-and-speak flow rather than recreating a visual document.
+const translateDocumentLocalAI = async (
+  fileBase64: string,
+  fileType: 'image' | 'pdf',
+  sourceLang: 'auto' | 'en' | 'pa',
+  targetLang: 'en' | 'pa',
+  gender: 'm' | 'f',
+): Promise<LocalDocumentResult> => {
+  const response = await fetchWithTimeout(
+    `${getBackendUrl()}/translate-document`,
+    {
+      method: 'POST',
+      headers: backendHeaders({'Content-Type': 'application/json'}),
+      body: JSON.stringify({
+        file: fileBase64,
+        file_type: fileType,
+        source_lang: sourceLang,
+        target_lang: targetLang,
+        gender,
+      }),
+    },
+    AI_BACKEND_DOCUMENT_TIMEOUT_MS,
+  );
+
+  if (!response.ok) {
+    throw new Error(`AI backend document translation failed: ${response.status}`);
+  }
+
+  const data = await response.json();
+  if (typeof data.data !== 'string' || (data.output_type !== 'image' && data.output_type !== 'pdf')) {
+    throw new Error('AI backend returned no document data');
+  }
+  return {
+    outputType: data.output_type,
+    data: data.data,
+    sourceLang: data.source_lang,
+    targetLang: data.target_lang,
   };
 };
 
@@ -416,6 +540,9 @@ interface UiStrings {
   translationFailed: (err: string) => string;
   ttsFailed: (err: string) => string;
   lowConfidenceWarning: (score: string) => string;
+  translationRefined: string;
+  numeralUncertainWarning: string;
+  nameUncertainWarning: string;
   flagButton: string;
   flagSent: string;
   flagFailed: string;
@@ -430,6 +557,18 @@ interface UiStrings {
   galleryPermissionMessage: string;
   ocrNoTextFound: string;
   ocrFailed: (err: string) => string;
+  documentOption: string;
+  choosePdfOption: string;
+  processingDocument: string;
+  documentFailed: (err: string) => string;
+  documentResultTitle: string;
+  documentFidelityNote: string;
+  saveAction: string;
+  shareAction: string;
+  printAction: string;
+  documentSaved: string;
+  documentSaveFailed: (err: string) => string;
+  documentPrintFailed: (err: string) => string;
 }
 
 const UI_STRINGS: Record<UiLang, UiStrings> = {
@@ -509,6 +648,9 @@ const UI_STRINGS: Record<UiLang, UiStrings> = {
     translationFailed: err => `Translation failed: ${err}`,
     ttsFailed: err => `TTS failed: ${err}`,
     lowConfidenceWarning: score => `This translation scored low-confidence (${score}) - please double check it.`,
+    translationRefined: 'Translation refined for accuracy.',
+    numeralUncertainWarning: 'A number in your speech may have been misheard - please double check it.',
+    nameUncertainWarning: 'A name in this translation may be missing - please double check it.',
     flagButton: 'Report this translation',
     flagSent: 'Thanks - this translation was flagged for review.',
     flagFailed: 'Could not send feedback, please check your connection.',
@@ -523,6 +665,18 @@ const UI_STRINGS: Record<UiLang, UiStrings> = {
     galleryPermissionMessage: 'This app needs access to your photos to scan and translate text from a picture',
     ocrNoTextFound: 'No text found in the photo. Try again with clearer lighting/focus.',
     ocrFailed: err => `Could not read text from photo: ${err}`,
+    documentOption: 'Translate Document',
+    choosePdfOption: 'Choose PDF File',
+    processingDocument: 'Recreating document with translated text...',
+    documentFailed: err => `Could not recreate the document: ${err}`,
+    documentResultTitle: 'Translated Document',
+    documentFidelityNote: 'Layout is approximately recreated - complex documents may not be pixel-perfect.',
+    saveAction: 'Save',
+    shareAction: 'Share',
+    printAction: 'Print',
+    documentSaved: 'Saved.',
+    documentSaveFailed: err => `Could not save: ${err}`,
+    documentPrintFailed: err => `Could not print: ${err}`,
   },
   pa: {
     appTitle: 'ePunjabi',
@@ -600,6 +754,9 @@ const UI_STRINGS: Record<UiLang, UiStrings> = {
     translationFailed: err => `ਅਨੁਵਾਦ ਅਸਫਲ: ${err}`,
     ttsFailed: err => `TTS ਅਸਫਲ: ${err}`,
     lowConfidenceWarning: score => `ਇਸ ਅਨੁਵਾਦ ਦਾ ਭਰੋਸਾ ਘੱਟ ਹੈ (${score}) - ਕਿਰਪਾ ਕਰਕੇ ਦੁਬਾਰਾ ਜਾਂਚ ਕਰੋ।`,
+    translationRefined: 'ਸ਼ੁੱਧਤਾ ਲਈ ਅਨੁਵਾਦ ਨੂੰ ਸੁਧਾਰਿਆ ਗਿਆ।',
+    numeralUncertainWarning: 'ਤੁਹਾਡੀ ਬੋਲੀ ਵਿੱਚ ਕੋਈ ਨੰਬਰ ਗਲਤ ਸੁਣਿਆ ਹੋ ਸਕਦਾ ਹੈ - ਕਿਰਪਾ ਕਰਕੇ ਦੁਬਾਰਾ ਜਾਂਚ ਕਰੋ।',
+    nameUncertainWarning: 'ਇਸ ਅਨੁਵਾਦ ਵਿੱਚ ਕੋਈ ਨਾਮ ਗੁੰਮ ਹੋ ਸਕਦਾ ਹੈ - ਕਿਰਪਾ ਕਰਕੇ ਦੁਬਾਰਾ ਜਾਂਚ ਕਰੋ।',
     flagButton: 'ਇਸ ਅਨੁਵਾਦ ਦੀ ਰਿਪੋਰਟ ਕਰੋ',
     flagSent: 'ਧੰਨਵਾਦ - ਇਹ ਅਨੁਵਾਦ ਸਮੀਖਿਆ ਲਈ ਭੇਜ ਦਿੱਤਾ ਗਿਆ ਹੈ।',
     flagFailed: 'ਫੀਡਬੈਕ ਭੇਜੀ ਨਹੀਂ ਜਾ ਸਕੀ, ਕਿਰਪਾ ਕਰਕੇ ਆਪਣਾ ਕਨੈਕਸ਼ਨ ਜਾਂਚੋ।',
@@ -614,6 +771,18 @@ const UI_STRINGS: Record<UiLang, UiStrings> = {
     galleryPermissionMessage: 'ਇਸ ਐਪ ਨੂੰ ਤਸਵੀਰ ਤੋਂ ਲਿਖਤ ਸਕੈਨ ਅਤੇ ਅਨੁਵਾਦ ਕਰਨ ਲਈ ਤੁਹਾਡੀਆਂ ਫੋਟੋਆਂ ਤੱਕ ਪਹੁੰਚ ਦੀ ਲੋੜ ਹੈ',
     ocrNoTextFound: 'ਫੋਟੋ ਵਿੱਚ ਕੋਈ ਲਿਖਤ ਨਹੀਂ ਮਿਲੀ। ਸਾਫ਼ ਰੌਸ਼ਨੀ/ਫੋਕਸ ਨਾਲ ਦੁਬਾਰਾ ਕੋਸ਼ਿਸ਼ ਕਰੋ।',
     ocrFailed: err => `ਫੋਟੋ ਤੋਂ ਲਿਖਤ ਨਹੀਂ ਪੜ੍ਹੀ ਜਾ ਸਕੀ: ${err}`,
+    documentOption: 'ਦਸਤਾਵੇਜ਼ ਦਾ ਅਨੁਵਾਦ ਕਰੋ',
+    choosePdfOption: 'PDF ਫਾਈਲ ਚੁਣੋ',
+    processingDocument: 'ਅਨੁਵਾਦਿਤ ਲਿਖਤ ਨਾਲ ਦਸਤਾਵੇਜ਼ ਦੁਬਾਰਾ ਬਣਾਇਆ ਜਾ ਰਿਹਾ ਹੈ...',
+    documentFailed: err => `ਦਸਤਾਵੇਜ਼ ਦੁਬਾਰਾ ਨਹੀਂ ਬਣਾਇਆ ਜਾ ਸਕਿਆ: ${err}`,
+    documentResultTitle: 'ਅਨੁਵਾਦਿਤ ਦਸਤਾਵੇਜ਼',
+    documentFidelityNote: 'ਲੇਆਉਟ ਲਗਭਗ ਦੁਬਾਰਾ ਬਣਾਇਆ ਗਿਆ ਹੈ - ਗੁੰਝਲਦਾਰ ਦਸਤਾਵੇਜ਼ ਪਿਕਸਲ-ਸਟੀਕ ਨਹੀਂ ਹੋ ਸਕਦੇ।',
+    saveAction: 'ਸੰਭਾਲੋ',
+    shareAction: 'ਸਾਂਝਾ ਕਰੋ',
+    printAction: 'ਪ੍ਰਿੰਟ ਕਰੋ',
+    documentSaved: 'ਸੰਭਾਲਿਆ ਗਿਆ।',
+    documentSaveFailed: err => `ਸੰਭਾਲਿਆ ਨਹੀਂ ਜਾ ਸਕਿਆ: ${err}`,
+    documentPrintFailed: err => `ਪ੍ਰਿੰਟ ਨਹੀਂ ਹੋ ਸਕਿਆ: ${err}`,
   },
 };
 
@@ -699,8 +868,16 @@ const TranslationAppMobile = (): JSX.Element => {
   const [serverStatus, setServerStatus] = useState<'idle' | 'testing' | 'connected' | 'unreachable'>('idle');
   const [feedbackState, setFeedbackState] = useState<'idle' | 'sending' | 'sent'>('idle');
   const [isScanningPhoto, setIsScanningPhoto] = useState(false);
+  const [isProcessingDocument, setIsProcessingDocument] = useState(false);
+  const [documentResult, setDocumentResult] = useState<LocalDocumentResult | null>(null);
+  const [documentLocalPath, setDocumentLocalPath] = useState<string | null>(null);
   const [isDarkMode, setIsDarkMode] = useState(false);
   const uiLanguageRef = useRef<UiLang>('en');
+  // Bumped at the start of every translateAndSpeak() call - lets the
+  // fire-and-forget background confidence check (which can resolve well
+  // after the user has moved on to a new translation) confirm it's still
+  // the latest request before overwriting `status` with its warning.
+  const translationRequestIdRef = useRef(0);
 
   const theme = isDarkMode ? darkTheme : lightTheme;
   const styles = useMemo(() => createStyles(theme), [theme]);
@@ -1029,12 +1206,12 @@ const TranslationAppMobile = (): JSX.Element => {
             ? 'en'
             : 'auto';
 
-      const {transcript} = await transcribeLocalAI(audioBase64, languageHint);
+      const {transcript, numeralUncertain} = await transcribeLocalAI(audioBase64, languageHint);
       setIsProcessingSpeech(false);
 
       if (transcript.trim()) {
         setInputText(transcript);
-        translateAndSpeak(transcript);
+        translateAndSpeak(transcript, numeralUncertain);
       } else {
         setStatus(T.speechError('no speech recognized'));
       }
@@ -1129,6 +1306,149 @@ const TranslationAppMobile = (): JSX.Element => {
     ]);
   };
 
+  // --- "Translate Document" feature: recreates a photo/PDF with translated
+  // text redrawn in place (see translateDocumentLocalAI above), instead of
+  // just extracting plain text like Scan Photo does above. ---
+
+  const handlePickedDocument = async (fileBase64: string, fileType: 'image' | 'pdf') => {
+    setDocumentResult(null);
+    setDocumentLocalPath(null);
+    setIsProcessingDocument(true);
+    setStatus(T.processingDocument);
+    try {
+      const result = await translateDocumentLocalAI(
+        fileBase64,
+        fileType,
+        'auto',
+        outputLanguage === 'pa' ? 'pa' : 'en',
+        speakerGender,
+      );
+      const ext = result.outputType === 'pdf' ? 'pdf' : 'png';
+      const localPath = `${RNFS.CachesDirectoryPath}/translated_document_${Date.now()}.${ext}`;
+      await RNFS.writeFile(localPath, result.data, 'base64');
+      setDocumentResult(result);
+      setDocumentLocalPath(localPath);
+      setStatus(T.ready);
+    } catch (error) {
+      console.error('Document translation error:', error);
+      setStatus(T.documentFailed(String(error)));
+    } finally {
+      setIsProcessingDocument(false);
+    }
+  };
+
+  const translateDocumentFromCamera = async () => {
+    const granted = await requestCameraPermission();
+    if (!granted) {
+      return;
+    }
+    const response = await launchCamera({mediaType: 'photo', includeBase64: true, quality: 0.9});
+    if (response.didCancel || response.errorCode || !response.assets?.[0]?.base64) {
+      return;
+    }
+    await handlePickedDocument(response.assets[0].base64, 'image');
+  };
+
+  const translateDocumentFromGallery = async () => {
+    const granted = await requestGalleryPermission();
+    if (!granted) {
+      return;
+    }
+    const response = await launchImageLibrary({mediaType: 'photo', includeBase64: true, quality: 0.9});
+    if (response.didCancel || response.errorCode || !response.assets?.[0]?.base64) {
+      return;
+    }
+    await handlePickedDocument(response.assets[0].base64, 'image');
+  };
+
+  // Lets the user pick an actual digitally-authored PDF file (not just a
+  // photo) via Android's system file picker (Storage Access Framework) -
+  // react-native-document-picker returns a content:// URI, which RNFS reads
+  // directly (no need to copy it to a regular file path first).
+  const translateDocumentFromFile = async () => {
+    try {
+      const [pickedFile] = await DocumentPicker.pick({type: [DocumentPicker.types.pdf]});
+      const base64 = await RNFS.readFile(pickedFile.uri, 'base64');
+      await handlePickedDocument(base64, 'pdf');
+    } catch (error) {
+      if (DocumentPicker.isCancel(error)) {
+        return;
+      }
+      console.error('PDF picker error:', error);
+      setStatus(T.documentFailed(String(error)));
+    }
+  };
+
+  const startDocumentTranslate = () => {
+    Alert.alert(T.documentOption, undefined, [
+      {text: T.cameraOption, onPress: () => translateDocumentFromCamera()},
+      {text: T.galleryOption, onPress: () => translateDocumentFromGallery()},
+      {text: T.choosePdfOption, onPress: () => translateDocumentFromFile()},
+      {text: T.cancel, style: 'cancel'},
+    ]);
+  };
+
+  const closeDocumentResult = () => {
+    setDocumentResult(null);
+    setDocumentLocalPath(null);
+    setStatus(T.ready);
+  };
+
+  const shareDocumentResult = async () => {
+    if (!documentLocalPath || !documentResult) {
+      return;
+    }
+    try {
+      await Share.open({
+        url: `file://${documentLocalPath}`,
+        type: documentResult.outputType === 'pdf' ? 'application/pdf' : 'image/png',
+        failOnCancel: false,
+      });
+    } catch (error) {
+      console.error('Share document error:', error);
+    }
+  };
+
+  // Images save straight to the gallery (scoped-storage safe via
+  // camera-roll's own MediaStore-based implementation on every Android
+  // version). A recreated PDF instead reuses the system share sheet, which
+  // already offers "Save to Drive"/"Save to Files" targets - writing
+  // directly to the public Downloads folder is unreliable across Android's
+  // scoped-storage rules without a more invasive permission/implementation,
+  // so the share sheet is the one path that reliably works everywhere.
+  const saveDocumentResult = async () => {
+    if (!documentLocalPath || !documentResult) {
+      return;
+    }
+    if (documentResult.outputType === 'pdf') {
+      await shareDocumentResult();
+      return;
+    }
+    try {
+      await CameraRoll.save(`file://${documentLocalPath}`, {type: 'photo'});
+      Alert.alert(T.documentSaved);
+    } catch (error) {
+      console.error('Save document error:', error);
+      Alert.alert(T.documentSaveFailed(String(error)));
+    }
+  };
+
+  const printDocumentResult = async () => {
+    if (!documentLocalPath || !documentResult) {
+      return;
+    }
+    try {
+      if (documentResult.outputType === 'pdf') {
+        await RNPrint.print({filePath: documentLocalPath});
+      } else {
+        await RNPrint.print({html: `<img src="file://${documentLocalPath}" style="width:100%;" />`});
+      }
+    } catch (error) {
+      console.error('Print document error:', error);
+      Alert.alert(T.documentPrintFailed(String(error)));
+    }
+  };
+
   const handleFlagTranslation = async () => {
     setFeedbackState('sending');
     try {
@@ -1141,7 +1461,9 @@ const TranslationAppMobile = (): JSX.Element => {
     }
   };
 
-  const translateAndSpeak = async (text: string) => {
+  const translateAndSpeak = async (text: string, numeralUncertain: boolean = false) => {
+    translationRequestIdRef.current += 1;
+    const requestId = translationRequestIdRef.current;
     setIsLoading(true);
     setFeedbackState('idle');
     setStatus(T.detectingLanguage);
@@ -1167,9 +1489,10 @@ const TranslationAppMobile = (): JSX.Element => {
       // triple/quadruple) translation time on this CPU-only backend - see
       // AI_BACKEND_TRANSLATE_TIMEOUT_MS above. Real users felt this latency
       // directly (18-27s per translation on a physical device), so the
-      // real-time voice/text flow now uses the fast single-pass path and
-      // skips the round-trip confidence check entirely.
-      const {translation: translated, confidence} = await translateLocalAI(
+      // real-time voice/text flow uses the fast single-pass path here and
+      // scores confidence separately afterwards (see fetchConfidenceInBackground
+      // below) instead of paying for it up front.
+      const {translation: translated, nameUncertain} = await translateLocalAI(
         text,
         sourceLang,
         targetLang,
@@ -1183,11 +1506,42 @@ const TranslationAppMobile = (): JSX.Element => {
       // Speak using on-device TTS in the correct target language
       await speakTranslation(translated, targetLang);
 
-      // Flag translations the round-trip check scored as likely inaccurate,
-      // without blocking the UI or overwriting the translated text itself.
-      if (confidence !== null && confidence < 0.5) {
-        console.log(`Low-confidence translation (score: ${confidence}):`, text, '->', translated);
-        setStatus(T.lowConfidenceWarning(String(confidence)));
+      // A flagged numeral takes priority - it's a more specific, more
+      // reliable signal (see punjabi_numerals.py's detect_unreliable_numeral)
+      // than the round-trip confidence check, and is already known without
+      // another network round trip. A dropped name is the next most
+      // specific signal (see punjabi_name_corrections.py's
+      // detect_dropped_names), checked before falling back to the generic
+      // round-trip confidence score.
+      if (numeralUncertain) {
+        setStatus(T.numeralUncertainWarning);
+      } else if (nameUncertain) {
+        setStatus(T.nameUncertainWarning);
+      } else {
+        // Fire-and-forget: score (and possibly improve, via ensemble
+        // re-decoding) round-trip confidence in the background so the
+        // real-time flow's latency is unaffected (see /confidence's
+        // docstring). Guarded by requestId so a slow response can't stomp
+        // a newer translation's text/status once the user has moved on.
+        fetchConfidenceInBackground(text, sourceLang, targetLang, translated, speakerGender).then(result => {
+          if (translationRequestIdRef.current !== requestId) {
+            return;
+          }
+          if (result.retried && result.translation && result.translation !== translated) {
+            console.log('Background ensemble retry improved translation:', translated, '->', result.translation);
+            setTranslatedText(result.translation);
+            setStatus(T.translationRefined);
+            speakTranslation(result.translation, targetLang).catch(() => {
+              // Non-fatal: the corrected text is already on screen even if
+              // re-speaking it fails.
+            });
+            return;
+          }
+          if (result.confidence !== null && result.confidence < 0.5) {
+            console.log(`Low-confidence translation (score: ${result.confidence}):`, text, '->', translated);
+            setStatus(T.lowConfidenceWarning(String(result.confidence)));
+          }
+        });
       }
 
     } catch (error) {
@@ -1358,6 +1712,14 @@ const TranslationAppMobile = (): JSX.Element => {
                   <Icon name="photo-camera" size={16} color={theme.accent} style={styles.iconInline} />
                   <Text style={styles.modeToggleText}>{T.scanPhoto}</Text>
                 </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={styles.modeToggle}
+                  onPress={startDocumentTranslate}
+                  disabled={isLoading || isListening || isProcessingSpeech || isScanningPhoto || isProcessingDocument}>
+                  <Icon name="description" size={16} color={theme.accent} style={styles.iconInline} />
+                  <Text style={styles.modeToggleText}>{T.documentOption}</Text>
+                </TouchableOpacity>
               </View>
             )}
 
@@ -1377,17 +1739,53 @@ const TranslationAppMobile = (): JSX.Element => {
                   {
                     backgroundColor: isListening
                       ? theme.danger
-                      : isLoading || isProcessingSpeech || isScanningPhoto
+                      : isLoading || isProcessingSpeech || isScanningPhoto || isProcessingDocument
                         ? theme.warning
                         : theme.success,
                   },
                 ]}
               />
               <Text style={styles.statusText}>{status}</Text>
-              {(isLoading || isScanningPhoto) && (
+              {(isLoading || isScanningPhoto || isProcessingDocument) && (
                 <ActivityIndicator size="small" color={theme.accent} style={styles.loader} />
               )}
             </View>
+
+            {!!documentResult && !!documentLocalPath && (
+              <View style={styles.documentResultCard}>
+                <Text style={styles.documentResultTitle}>{T.documentResultTitle}</Text>
+                {documentResult.outputType === 'image' ? (
+                  <Image
+                    source={{uri: `file://${documentLocalPath}`}}
+                    style={styles.documentResultImage}
+                    resizeMode="contain"
+                  />
+                ) : (
+                  <View style={styles.documentResultPdfPlaceholder}>
+                    <Icon name="picture-as-pdf" size={48} color={theme.accent} />
+                  </View>
+                )}
+                <Text style={styles.documentFidelityNote}>{T.documentFidelityNote}</Text>
+                <View style={styles.documentActionRow}>
+                  <TouchableOpacity style={styles.documentActionButton} onPress={saveDocumentResult}>
+                    <Icon name="save-alt" size={18} color="#ffffff" />
+                    <Text style={styles.documentActionText}>{T.saveAction}</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity style={styles.documentActionButton} onPress={shareDocumentResult}>
+                    <Icon name="share" size={18} color="#ffffff" />
+                    <Text style={styles.documentActionText}>{T.shareAction}</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity style={styles.documentActionButton} onPress={printDocumentResult}>
+                    <Icon name="print" size={18} color="#ffffff" />
+                    <Text style={styles.documentActionText}>{T.printAction}</Text>
+                  </TouchableOpacity>
+                </View>
+                <TouchableOpacity style={styles.backButton} onPress={closeDocumentResult}>
+                  <Icon name="arrow-back" size={16} color={theme.accent} style={styles.iconInline} />
+                  <Text style={styles.backButtonText}>{T.back}</Text>
+                </TouchableOpacity>
+              </View>
+            )}
 
             {!!translatedText && (
               <>
@@ -1928,6 +2326,67 @@ const createStyles = (theme: ThemeColors) => StyleSheet.create({
   },
   punjabiText: {
     fontSize: 18,
+  },
+  documentResultCard: {
+    backgroundColor: theme.surface,
+    padding: 15,
+    borderRadius: 16,
+    marginVertical: 10,
+    elevation: 2,
+    borderWidth: 1.5,
+    borderColor: theme.border,
+    borderLeftWidth: 3,
+    borderLeftColor: theme.accent,
+    alignItems: 'center',
+  },
+  documentResultTitle: {
+    fontSize: 15,
+    fontWeight: 'bold',
+    color: theme.accent,
+    marginBottom: 10,
+    alignSelf: 'flex-start',
+  },
+  documentResultImage: {
+    width: '100%',
+    height: 260,
+    borderRadius: 10,
+    backgroundColor: theme.surfaceAlt,
+  },
+  documentResultPdfPlaceholder: {
+    width: '100%',
+    height: 140,
+    borderRadius: 10,
+    backgroundColor: theme.surfaceAlt,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  documentFidelityNote: {
+    fontSize: 12,
+    color: theme.textSecondary,
+    marginTop: 10,
+    textAlign: 'center',
+  },
+  documentActionRow: {
+    flexDirection: 'row',
+    justifyContent: 'center',
+    marginTop: 14,
+    marginBottom: 8,
+  },
+  documentActionButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 10,
+    paddingHorizontal: 16,
+    borderRadius: 18,
+    backgroundColor: theme.accent,
+    marginHorizontal: 6,
+  },
+  documentActionText: {
+    fontSize: 13,
+    color: '#ffffff',
+    fontWeight: '600',
+    marginLeft: 6,
   },
   voiceSelector: {
     backgroundColor: theme.surface,
