@@ -131,6 +131,15 @@ const backendHeaders = (extra?: Record<string, string>): Record<string, string> 
   }
   return headers;
 };
+
+// A 401 almost always means the API Key field in Settings is empty or wrong
+// on THIS device/browser (API key storage is per-device, not synced), which
+// is easy to miss since every other symptom looks identical to a generic
+// server error - spell it out so users don't have to guess.
+const describeBackendError = (prefix: string, status: number): string =>
+  status === 401
+    ? `${prefix} failed: missing or incorrect API key - check Settings > API Key (401)`
+    : `${prefix} failed: ${status}`;
 // Language detection is a cheap Unicode-range heuristic (no model), so it's
 // always fast. Translation runs a 1B-parameter model - on a machine without a
 // GPU this can legitimately take much longer, especially with "verify"
@@ -212,7 +221,7 @@ const detectLanguageLocalAI = async (text: string): Promise<string> => {
   );
 
   if (!response.ok) {
-    throw new Error(`AI backend detect-language failed: ${response.status}`);
+    throw new Error(describeBackendError('AI backend detect-language', response.status));
   }
 
   const data = await response.json();
@@ -252,7 +261,7 @@ const translateLocalAI = async (
   );
 
   if (!response.ok) {
-    throw new Error(`AI backend translate failed: ${response.status}`);
+    throw new Error(describeBackendError('AI backend translate', response.status));
   }
 
   const data = await response.json();
@@ -336,7 +345,7 @@ const transcribeLocalAI = async (
   );
 
   if (!response.ok) {
-    throw new Error(`AI backend speech-to-text failed: ${response.status}`);
+    throw new Error(describeBackendError('AI backend speech-to-text', response.status));
   }
 
   const data = await response.json();
@@ -373,7 +382,7 @@ const scanPhotoLocalAI = async (
   );
 
   if (!response.ok) {
-    throw new Error(`AI backend OCR failed: ${response.status}`);
+    throw new Error(describeBackendError('AI backend OCR', response.status));
   }
 
   const data = await response.json();
@@ -424,7 +433,7 @@ const translateDocumentLocalAI = async (
   );
 
   if (!response.ok) {
-    throw new Error(`AI backend document translation failed: ${response.status}`);
+    throw new Error(describeBackendError('AI backend document translation', response.status));
   }
 
   const data = await response.json();
@@ -466,7 +475,7 @@ const sendFeedback = async (
   );
 
   if (!response.ok) {
-    throw new Error(`AI backend feedback failed: ${response.status}`);
+    throw new Error(describeBackendError('AI backend feedback', response.status));
   }
 };
 
