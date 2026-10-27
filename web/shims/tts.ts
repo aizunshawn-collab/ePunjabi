@@ -28,7 +28,32 @@ class TtsWeb {
   }
 
   async voices(): Promise<SpeechSynthesisVoice[]> {
-    return window.speechSynthesis ? window.speechSynthesis.getVoices() : [];
+    return this.loadedVoices();
+  }
+
+  // getVoices() returns [] until the browser has asynchronously loaded its
+  // voice list (fired via the 'voiceschanged' event) - calling speak()
+  // before that happens can silently produce no audio at all (no error
+  // event either) on Chrome/Edge, which is why TTS seemed to randomly not
+  // "talk back" on the web build. Wait for the list at least once per page
+  // load, with a timeout in case a browser never fires the event.
+  private voicesReady: Promise<SpeechSynthesisVoice[]> | null = null;
+  private loadedVoices(): Promise<SpeechSynthesisVoice[]> {
+    if (!window.speechSynthesis) {
+      return Promise.resolve([]);
+    }
+    const existing = window.speechSynthesis.getVoices();
+    if (existing.length > 0) {
+      return Promise.resolve(existing);
+    }
+    if (!this.voicesReady) {
+      this.voicesReady = new Promise(resolve => {
+        const finish = () => resolve(window.speechSynthesis.getVoices());
+        window.speechSynthesis.addEventListener('voiceschanged', finish, {once: true});
+        setTimeout(finish, 2000);
+      });
+    }
+    return this.voicesReady;
   }
 
   addEventListener(event: TtsEvent, callback: () => void): void {
@@ -47,9 +72,19 @@ class TtsWeb {
     if (!window.speechSynthesis) {
       return;
     }
+    const voices = await this.loadedVoices();
     return new Promise(resolve => {
       const utterance = new SpeechSynthesisUtterance(text);
       utterance.lang = this.language;
+      // Explicitly assigning a matching voice is more reliable across
+      // browsers than relying on .lang alone to pick one - some browsers
+      // (and their default voice) will otherwise silently drop the request.
+      const match =
+        voices.find(v => v.lang.toLowerCase() === this.language.toLowerCase()) ??
+        voices.find(v => v.lang.toLowerCase().startsWith(this.language.slice(0, 2).toLowerCase()));
+      if (match) {
+        utterance.voice = match;
+      }
       utterance.pitch = this.pitch;
       utterance.rate = this.rate;
       utterance.onstart = () => this.emit('tts-start');

@@ -6,6 +6,11 @@
 // import itself still needs something to bind to.
 export * from 'react-native-web';
 
+// react-native-web's own Alert.alert() is a hard no-op on web - shadow it
+// with a real DOM-based implementation (see ./alert.ts) so the "Scan Photo"/
+// "Translate Document" source pickers and error dialogs actually show up.
+export {default as Alert} from './alert';
+
 export const PermissionsAndroid = {
   PERMISSIONS: {
     RECORD_AUDIO: 'android.permission.RECORD_AUDIO',
