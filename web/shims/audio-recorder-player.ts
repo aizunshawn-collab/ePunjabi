@@ -15,10 +15,18 @@ export default class AudioRecorderPlayerWeb {
     this.currentPath = path;
     this.chunks = [];
     this.stream = await navigator.mediaDevices.getUserMedia({audio: true});
-    const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
-      ? 'audio/webm;codecs=opus'
-      : 'audio/webm';
-    this.mediaRecorder = new MediaRecorder(this.stream, {mimeType});
+    // Safari/WebKit (desktop and iOS) doesn't support 'audio/webm' at all -
+    // MediaRecorder's constructor throws synchronously for an unsupported
+    // mimeType, which previously made startRecorder() throw on every
+    // Safari-based browser, silently falling back to the on-device
+    // SpeechRecognition path (which can't auto-detect Punjabi vs English,
+    // unlike the backend's real auto-detect - see startVoiceRecognition in
+    // TranslationAppMobile.tsx). Try Safari's own supported type(s) too, and
+    // as a last resort let the browser pick its own default rather than
+    // throwing.
+    const preferredTypes = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4', 'audio/aac'];
+    const mimeType = preferredTypes.find(type => MediaRecorder.isTypeSupported(type));
+    this.mediaRecorder = mimeType ? new MediaRecorder(this.stream, {mimeType}) : new MediaRecorder(this.stream);
     this.mediaRecorder.ondataavailable = event => {
       if (event.data.size > 0) {
         this.chunks.push(event.data);

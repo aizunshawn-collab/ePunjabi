@@ -68,20 +68,82 @@ class TtsWeb {
     this.listeners[event]?.forEach(cb => cb());
   }
 
+  // Essentially every desktop/mobile browser ships zero Punjabi system
+  // voices (confirmed by testing - speechSynthesis.getVoices() returns only
+  // English voices even on recent Windows/iOS), so speechSynthesis can
+  // never "talk back" in Punjabi no matter how voice-loading is handled.
+  // Fall back to the backend's /tts route (Google Cloud TTS, see
+  // ai_backend_server.py and google_tts_fallback.py) for an actual Punjabi
+  // voice, reading the same Settings-configured backend URL/API key the
+  // rest of the app uses (see TranslationAppMobile.tsx's BACKEND_URL/API_KEY
+  // storage keys) directly from localStorage to avoid a circular import.
+  private async speakViaBackend(text: string, language: 'en' | 'pa'): Promise<boolean> {
+    try {
+      const backendUrl =
+        (typeof localStorage !== 'undefined' && localStorage.getItem('ai_backend_url')) ||
+        'https://epunjabi-backend.fly.dev';
+      const apiKey = (typeof localStorage !== 'undefined' && localStorage.getItem('ai_backend_api_key')) || '';
+      const headers: Record<string, string> = {'Content-Type': 'application/json'};
+      if (apiKey) {
+        headers['X-API-Key'] = apiKey;
+      }
+      const response = await fetch(`${backendUrl.replace(/\/+$/, '')}/tts`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({text, language}),
+      });
+      if (!response.ok) {
+        return false;
+      }
+      const data = await response.json();
+      if (typeof data.audioContent !== 'string') {
+        return false;
+      }
+      const audio = new Audio(`data:audio/mp3;base64,${data.audioContent}`);
+      this.emit('tts-start');
+      await new Promise<void>(resolve => {
+        audio.onended = () => {
+          this.emit('tts-finish');
+          resolve();
+        };
+        audio.onerror = () => {
+          this.emit('tts-cancel');
+          resolve();
+        };
+        audio.play().catch(() => {
+          this.emit('tts-cancel');
+          resolve();
+        });
+      });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   async speak(text: string): Promise<void> {
     if (!window.speechSynthesis) {
       return;
     }
     const voices = await this.loadedVoices();
+    const match =
+      voices.find(v => v.lang.toLowerCase() === this.language.toLowerCase()) ??
+      voices.find(v => v.lang.toLowerCase().startsWith(this.language.slice(0, 2).toLowerCase()));
+    if (!match && this.language.toLowerCase().startsWith('pa')) {
+      const played = await this.speakViaBackend(text, 'pa');
+      if (played) {
+        return;
+      }
+      // Fall through to speechSynthesis anyway (no voice will match, but at
+      // least something attempts to play rather than silently doing nothing)
+      // in case the backend fallback itself is unreachable/not configured.
+    }
     return new Promise(resolve => {
       const utterance = new SpeechSynthesisUtterance(text);
       utterance.lang = this.language;
       // Explicitly assigning a matching voice is more reliable across
       // browsers than relying on .lang alone to pick one - some browsers
       // (and their default voice) will otherwise silently drop the request.
-      const match =
-        voices.find(v => v.lang.toLowerCase() === this.language.toLowerCase()) ??
-        voices.find(v => v.lang.toLowerCase().startsWith(this.language.slice(0, 2).toLowerCase()));
       if (match) {
         utterance.voice = match;
       }
