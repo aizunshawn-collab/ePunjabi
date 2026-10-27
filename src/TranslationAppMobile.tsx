@@ -1315,6 +1315,15 @@ const TranslationAppMobile = (): JSX.Element => {
   };
 
   const startPhotoScan = () => {
+    // On web there's no real OS-level "camera vs gallery" distinction to
+    // recreate - a plain file input already makes the browser/OS show its
+    // own native chooser (camera, photo library, files, etc. depending on
+    // the device), so skip our in-app picker entirely and let the platform
+    // handle it the way it already does best.
+    if (Platform.OS === 'web') {
+      scanPhotoFromGallery();
+      return;
+    }
     Alert.alert(T.choosePhotoSourceTitle, undefined, [
       {text: T.cameraOption, onPress: () => scanPhotoFromCamera()},
       {text: T.galleryOption, onPress: () => scanPhotoFromGallery()},
