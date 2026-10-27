@@ -14,11 +14,17 @@
 # of 8GB uncompressed" - this failure is SILENT in `flyctl deploy`'s own
 # output, which still reports "complete"/shows the DNS-verified message even
 # though the machine never actually updated). Splitting into a `builder`
-# stage (apt build-essential/git + pip/NeMo source builds + model downloads)
-# and a slim `final` stage that only COPYs the installed venv + downloaded
-# models removes build-essential, git, pip wheel caches, and NeMo's cloned
-# repo source tree from the shipped image - none of that is needed at
-# runtime.
+# stage (apt build-essential/git + pip/NeMo source builds) and a slim
+# `final` stage that only COPYs the installed venv removes build-essential,
+# git, pip wheel caches, and NeMo's cloned repo source tree from the shipped
+# image - none of that is needed at runtime.
+#
+# MODEL WEIGHTS (2026-10-19): no longer downloaded at build time / baked into
+# the image at all - see the NOTE further down, right before the `final`
+# stage, for why (the gated NeMo RNNT checkpoint alone was enough to push
+# the image back over the 8GB limit above). They're downloaded at container
+# STARTUP instead, onto a persistent Fly Volume mounted at /app/models (see
+# download_models.py, entrypoint.sh, and fly.toml's [[mounts]]).
 FROM python:3.11-slim AS builder
 
 # git is needed to clone AI4Bharat's NeMo fork below. build-essential is
@@ -97,45 +103,43 @@ RUN pip install --no-cache-dir "numpy<2"
 # requirement and is otherwise unused by this backend at runtime.
 RUN pip install --no-cache-dir "pyarrow<19"
 
-# Download the gated IndicConformer .nemo checkpoint (contains the native
-# RNNT decoder head - the public ONNX export below is CTC-only). Needs a HF
-# token with access to the gated ai4bharat repo (the account's own token
-# already has it, from accepting the repo's gate in an earlier session).
-# Passed as a BuildKit secret (`flyctl deploy --build-secret HF_TOKEN=...`)
-# so it is never baked into an image layer/history.
-RUN --mount=type=secret,id=HF_TOKEN \
-    python -c "\
-import os; \
-from huggingface_hub import hf_hub_download; \
-token = open('/run/secrets/HF_TOKEN').read().strip(); \
-hf_hub_download(repo_id='ai4bharat/indicconformer_stt_pa_hybrid_ctc_rnnt_large', filename='indicconformer_stt_pa_hybrid_rnnt_large.nemo', local_dir='models/indicconformer-nemo', token=token)"
+# Pin pandas to an exact version verified (in this project's own local dev
+# venv) to import cleanly against numpy 1.26.4, also AFTER the numpy<2 pin
+# above. requirements.txt's indic-nlp-library (installed earlier, before the
+# NeMo/numpy<2 sequence) transitively pulls in pandas (indicnlp/script/
+# indic_scripts.py does `import pandas as pd`), unpinned - a fresh build
+# resolves whatever the latest pandas release is, built against whatever
+# numpy is present AT THAT POINT (unconstrained, likely numpy 2.x) - the
+# numpy<2 pin further below then downgrades numpy afterward WITHOUT
+# reinstalling pandas, breaking pandas' compiled C-extension ABI against the
+# now-older numpy and crashing every gunicorn worker on boot with
+# "ImportError: Please upgrade numpy to >= 2.0.2 to use this pandas version"
+# (confirmed via a live traceback - /health never passed, every worker
+# crashed on `from indictrans_processor import IndicProcessor`). A first
+# attempt at pinning just "pandas<2.2.2" (open-ended) instead produced a
+# DIFFERENT crash ("ImportError: C extension: None not built" - pip
+# resolved a version/build without a usable prebuilt wheel here and fell
+# back to an incomplete source build) - also confirmed via a live
+# traceback. pandas==3.0.5 is confirmed (via `import numpy, pandas` in this
+# project's own local venv, numpy 1.26.4) to import without error.
+# `--only-binary=:all:` makes pip fail loudly at `docker build` time instead
+# of silently shipping another broken install if a wheel ever goes missing.
+RUN pip install --no-cache-dir --only-binary=:all: "pandas==3.0.5"
 
-# Fetch all CT2/ONNX model directories from Hugging Face Hub at build time so
-# the running container never needs to download anything at cold start.
-# All source repos are public/ungated - no HF_TOKEN needed.
-# NOTE: all Whisper models (whisper-small-ct2, whisper-punjabi-ct2,
-# distil-whisper-large-v3-ct2) and the opt-in Parakeet-CTC-0.6b
-# (AI-pro11/parakeet-ctc-0.6b-onnx) are intentionally NOT downloaded here -
-# removed entirely 2026-10 in favor of Parakeet-unified (English) +
-# IndicConformer (Punjabi) + SpeechBrain (language-ID), see repo memory.
-RUN python -c "from huggingface_hub import snapshot_download; \
-snapshot_download(repo_id='AI-pro11/indictrans2-en-indic-ct2-int8', local_dir='models/indictrans2-en-indic-ct2-int8'); \
-snapshot_download(repo_id='AI-pro11/indictrans2-indic-en-ct2-int8', local_dir='models/indictrans2-indic-en-ct2-int8'); \
-snapshot_download(repo_id='AI-pro11/indicconformer-punjabi-ctc-onnx', local_dir='models/indicconformer-punjabi-ctc-onnx')"
+# NOTE 2026-10-19: model downloads used to happen HERE, at build time, baked
+# directly into the image. Re-adding the gated ~523MB NeMo RNNT checkpoint
+# pushed the final image's UNCOMPRESSED size back over Fly's 8GB-per-machine
+# unpack limit - a failure mode that is SILENT in `flyctl deploy`'s own
+# output (reports "complete"/healthy) while the machine keeps serving its old
+# image forever; only `flyctl logs`' separate runner-level entries show the
+# real "Not enough space to unpack image, possibly exceeds maximum of 8GiB
+# uncompressed" error. Model downloads now happen at CONTAINER STARTUP
+# instead (see download_models.py + entrypoint.sh), writing into /app/models
+# which is a persistent Fly Volume mount (see fly.toml's [[mounts]]) kept
+# entirely OFF the image. This keeps the image itself (just the venv/code) a
+# small, stable size regardless of how many/how large the models get.
 
-# Parakeet-unified-en-0.6b ONNX, INT8 only (~660MB; the fp32 variant is 2.4GB and
-# would risk Fly's 8GB uncompressed image limit). The only English ASR model -
-# see parakeet_unified_asr.py.  Lands in models/parakeet-unified-en-onnx/onnx_int8/.
-RUN python -c "from huggingface_hub import snapshot_download; \
-snapshot_download(repo_id='eschmidbauer/parakeet-unified-en-0.6b-onnx', allow_patterns=['onnx_int8/*'], local_dir='models/parakeet-unified-en-onnx')"
-
-# SpeechBrain's VoxLingua107 ECAPA-TDNN spoken-language-ID model (~86MB) -
-# replaces Whisper's detect_language() for 'auto'-mode /speech-to-text
-# requests. Public/ungated, no HF_TOKEN needed.
-RUN python -c "from huggingface_hub import snapshot_download; \
-snapshot_download(repo_id='speechbrain/lang-id-voxlingua107-ecapa', local_dir='models/lang-id-voxlingua107-ecapa')"
-
-# --- Final runtime stage: only the installed venv + downloaded models ---
+# --- Final runtime stage: only the installed venv, no model weights ---
 FROM python:3.11-slim AS final
 
 # curl is needed by watchdog.sh's health polling. decode_audio() (from the
@@ -143,21 +147,25 @@ FROM python:3.11-slim AS final
 # ai_backend_server.py's import comment) decodes audio itself via PyAV
 # (bundled ffmpeg decode libs) - no system ffmpeg needed. tesseract-ocr
 # (+ eng/pan trained data) is needed by /ocr - pytesseract just shells out to
-# the tesseract binary, it isn't a pip package. Neither git nor
-# build-essential is needed at runtime - they stay in the builder stage only.
+# the tesseract binary, it isn't a pip package. libglib2.0-0 is needed by
+# opencv-python-headless (document_translator.py's cv2.inpaint) - the
+# "-headless" build avoids the much heavier libGL/X11 GUI deps, but still
+# dynamically links libgthread-2.0.so.0 from glib at import time. Neither
+# git nor build-essential is needed at runtime - they stay in the builder
+# stage only.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    curl tesseract-ocr tesseract-ocr-eng tesseract-ocr-pan \
+    curl tesseract-ocr tesseract-ocr-eng tesseract-ocr-pan libglib2.0-0 \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
 COPY --from=builder /opt/venv /opt/venv
-COPY --from=builder /app/models ./models
 ENV PATH="/opt/venv/bin:$PATH"
 
-COPY ai_backend_server.py indictrans_processor.py indicconformer_asr.py indicconformer_nemo_asr.py parakeet_unified_asr.py punjabi_numerals.py english_numerals.py punjabi_name_corrections.py parakeet_name_corrections.py punjabi_alphanumeric_fix.py ocr_processor.py supervisord.conf watchdog.sh ./
-RUN chmod +x watchdog.sh
+COPY ai_backend_server.py indictrans_processor.py indicconformer_asr.py indicconformer_nemo_asr.py parakeet_unified_asr.py punjabi_numerals.py english_numerals.py punjabi_name_corrections.py parakeet_name_corrections.py punjabi_alphanumeric_fix.py word_sense_disambiguation.py beam_sensitive_patterns.py google_translate_fallback.py google_tts_fallback.py ocr_processor.py document_translator.py download_models.py supervisord.conf watchdog.sh entrypoint.sh ./
+COPY fonts ./fonts
+RUN chmod +x watchdog.sh entrypoint.sh
 
 EXPOSE 8080
 
-CMD ["supervisord", "-c", "supervisord.conf"]
+CMD ["/app/entrypoint.sh"]
