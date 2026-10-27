@@ -56,10 +56,26 @@ let currentBackendUrl = DEFAULT_BACKEND_URL;
 
 const getBackendUrl = (): string => currentBackendUrl;
 
+// Fly.io (and most hosts) force-redirect http -> https, but that redirect
+// changes POST requests into GET along the way, turning every POST-only
+// endpoint (e.g. /detect-language) into a false "405 Method Not Allowed".
+// Upgrade the scheme ourselves instead of relying on the redirect - unless
+// the host is a local dev address, which genuinely only serves plain http.
+const normalizeBackendUrl = (url: string): string => {
+  const trimmed = url.trim().replace(/\/+$/, '');
+  if (!trimmed.startsWith('http://')) {
+    return trimmed;
+  }
+  const host = trimmed.match(/^http:\/\/([^/:]+)/)?.[1] ?? '';
+  const isLocalDevHost =
+    host === 'localhost' || host === '127.0.0.1' || host === '10.0.2.2' || /^(10\.|172\.(1[6-9]|2\d|3[0-1])\.|192\.168\.)/.test(host);
+  return isLocalDevHost ? trimmed : `https://${trimmed.slice('http://'.length)}`;
+};
+
 const persistBackendUrl = async (url: string): Promise<void> => {
-  currentBackendUrl = url;
+  currentBackendUrl = normalizeBackendUrl(url);
   try {
-    await AsyncStorage.setItem(BACKEND_URL_STORAGE_KEY, url);
+    await AsyncStorage.setItem(BACKEND_URL_STORAGE_KEY, currentBackendUrl);
   } catch {
     // Non-fatal: the URL still takes effect for this session even if it
     // can't be persisted for next launch.
@@ -70,7 +86,7 @@ const loadPersistedBackendUrl = async (): Promise<string> => {
   try {
     const stored = await AsyncStorage.getItem(BACKEND_URL_STORAGE_KEY);
     if (stored) {
-      currentBackendUrl = stored;
+      currentBackendUrl = normalizeBackendUrl(stored);
     }
   } catch {
     // Fall back to the default set above.
@@ -958,8 +974,8 @@ const TranslationAppMobile = (): JSX.Element => {
     if (!trimmed) {
       return;
     }
-    setServerUrlDraft(trimmed);
     await persistBackendUrl(trimmed);
+    setServerUrlDraft(getBackendUrl());
     await persistApiKey(apiKeyDraft.trim());
     setServerStatus('testing');
     const reachable = await isBackendReachable();
