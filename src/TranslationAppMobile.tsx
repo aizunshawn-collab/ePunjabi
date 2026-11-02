@@ -189,6 +189,60 @@ const VOICE_RECORDING_PATH = `${RNFS.CachesDirectoryPath}/voice_input.m4a`;
 // Single shared recorder instance for the app's lifetime.
 const audioRecorderPlayer = new AudioRecorderPlayer();
 
+// Where a backend-synthesized Punjabi TTS clip is written before playback.
+const TTS_OUTPUT_PATH = `${RNFS.CachesDirectoryPath}/tts_output.mp3`;
+
+// Plays a local audio file to completion via the same recorder/player
+// instance used for voice input, resolving once playback finishes.
+const playAudioFile = (path: string): Promise<void> => {
+  return new Promise(resolve => {
+    audioRecorderPlayer.addPlayBackListener(e => {
+      if (e.currentPosition >= e.duration) {
+        audioRecorderPlayer.removePlayBackListener();
+        audioRecorderPlayer.stopPlayer().catch(() => {});
+        resolve();
+      }
+    });
+    audioRecorderPlayer.startPlayer(path).catch(() => {
+      audioRecorderPlayer.removePlayBackListener();
+      resolve();
+    });
+  });
+};
+
+// Native Android/iOS TTS engines ship whatever Punjabi voice (if any) the
+// device/OS happens to have installed, which is inconsistent and (per the
+// embedded pa-in-x-pac-lstm-embedded voice tested on-emulator) can be low
+// quality. Use the same backend Google Cloud TTS model the web build falls
+// back to (see ai_backend_server.py's /tts route + google_tts_fallback.py),
+// so Punjabi speech output is identical across every platform. Returns
+// false (never throws) so the caller can fall back to the native engine.
+const speakPunjabiViaBackend = async (text: string): Promise<boolean> => {
+  try {
+    const response = await fetchWithTimeout(
+      `${getBackendUrl()}/tts`,
+      {
+        method: 'POST',
+        headers: backendHeaders({'Content-Type': 'application/json'}),
+        body: JSON.stringify({text, language: 'pa'}),
+      },
+      30000,
+    );
+    if (!response.ok) {
+      return false;
+    }
+    const data = await response.json();
+    if (typeof data.audioContent !== 'string') {
+      return false;
+    }
+    await RNFS.writeFile(TTS_OUTPUT_PATH, data.audioContent, 'base64');
+    await playAudioFile(TTS_OUTPUT_PATH);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
 const fetchWithTimeout = (url: string, options: RequestInit, timeoutMs: number): Promise<Response> => {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
@@ -1588,6 +1642,18 @@ const TranslationAppMobile = (): JSX.Element => {
   };
 
   const speakTranslation = async (text: string, languageCode: string) => {
+    // Punjabi: use the same backend Google Cloud TTS model as the web build,
+    // instead of whatever (if any) Punjabi voice the native OS has installed
+    // - keeps speech output identical across platforms. Falls back to the
+    // native engine below if the backend is unreachable.
+    if (Platform.OS !== 'web' && languageCode === 'pa') {
+      setStatus(UI_STRINGS[uiLanguageRef.current].speakingPunjabi);
+      const played = await speakPunjabiViaBackend(text);
+      if (played) {
+        setStatus(UI_STRINGS[uiLanguageRef.current].punjabiComplete);
+        return;
+      }
+    }
     try {
       const ttsLocale = languageCode === 'pa' ? 'pa-IN' : 'en-US';
       await Tts.setDefaultLanguage(ttsLocale);
