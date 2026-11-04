@@ -165,13 +165,19 @@ const AI_BACKEND_CONFIDENCE_TIMEOUT_MS = 150000;
 const AI_BACKEND_SPEECH_TIMEOUT_MS = 90000;
 // Used only to decide, before recording starts, whether the backend is up -
 // kept short-ish so the app doesn't make the user wait too long to find out
-// it needs to fall back to on-device recognition, but long enough to
-// tolerate Fly.io waking a suspended machine (auto_stop_machines='suspend'
-// in fly.toml) - that resume is ~0.25s on the app side, but TLS handshake +
-// Fly's own resume orchestration over a real network can push well past the
-// 2.5s this used to be, causing false "unreachable" reports right after any
-// idle period.
+// it needs to fall back to on-device recognition. A cold Fly.io machine
+// (auto_stop_machines='suspend' in fly.toml) takes much longer than this to
+// wake, so a timeout here just means "use on-device recognition for this one
+// utterance" rather than a hard failure - see AI_BACKEND_WAKEUP_TIMEOUT_MS
+// below for the path that actually waits out a cold start.
 const AI_BACKEND_HEALTH_TIMEOUT_MS = 8000;
+// Loading this backend's several speech/translation models in series after
+// a Fly.io suspend has been observed to take 80s+ before it answers any
+// request. isBackendReachable and detectLanguageLocalAI retry once with
+// this budget after their normal (short) timeout fails, so a sleeping
+// backend fails the same way a dead one does. Normal warm-server calls
+// never hit this - it only ever matters right after an idle period.
+const AI_BACKEND_WAKEUP_TIMEOUT_MS = 100000;
 // Tesseract OCR runs twice (once per language) when the caller doesn't know
 // which script the photo contains, so give it a generous budget.
 const AI_BACKEND_OCR_TIMEOUT_MS = 30000;
@@ -258,21 +264,39 @@ const isBackendReachable = async (): Promise<boolean> => {
     const response = await fetchWithTimeout(`${getBackendUrl()}/health`, {method: 'GET'}, AI_BACKEND_HEALTH_TIMEOUT_MS);
     return response.ok;
   } catch {
-    return false;
+    try {
+      const response = await fetchWithTimeout(`${getBackendUrl()}/health`, {method: 'GET'}, AI_BACKEND_WAKEUP_TIMEOUT_MS);
+      return response.ok;
+    } catch {
+      return false;
+    }
   }
 };
 
-// Detect language via the local AI backend's heuristic detector.
-const detectLanguageLocalAI = async (text: string): Promise<string> => {
-  const response = await fetchWithTimeout(
-    `${getBackendUrl()}/detect-language`,
-    {
-      method: 'POST',
-      headers: backendHeaders({'Content-Type': 'application/json'}),
-      body: JSON.stringify({text}),
-    },
-    AI_BACKEND_DETECT_TIMEOUT_MS,
-  );
+// Detect language via the local AI backend's heuristic detector. If the
+// quick attempt times out, retry once with AI_BACKEND_WAKEUP_TIMEOUT_MS in
+// case the backend is just cold-starting rather than genuinely down (see
+// that constant above) - onSlowRetry lets the caller tell the user why this
+// is taking longer than usual instead of just looking frozen.
+const detectLanguageLocalAI = async (text: string, onSlowRetry?: () => void): Promise<string> => {
+  const attempt = (timeoutMs: number) =>
+    fetchWithTimeout(
+      `${getBackendUrl()}/detect-language`,
+      {
+        method: 'POST',
+        headers: backendHeaders({'Content-Type': 'application/json'}),
+        body: JSON.stringify({text}),
+      },
+      timeoutMs,
+    );
+
+  let response: Response;
+  try {
+    response = await attempt(AI_BACKEND_DETECT_TIMEOUT_MS);
+  } catch {
+    onSlowRetry?.();
+    response = await attempt(AI_BACKEND_WAKEUP_TIMEOUT_MS);
+  }
 
   if (!response.ok) {
     throw new Error(describeBackendError('AI backend detect-language', response.status));
@@ -559,6 +583,7 @@ interface UiStrings {
   inputting: string;
   speakNow: string;
   tapAndSpeak: string;
+  wakingUp: string;
   stopRecording: string;
   translatingBtn: string;
   startVoice: string;
@@ -664,6 +689,7 @@ const UI_STRINGS: Record<UiLang, UiStrings> = {
     inputting: 'Inputting...',
     speakNow: 'Speak now in English or Punjabi...',
     tapAndSpeak: 'SmartDetection: speak English or Punjabi',
+    wakingUp: 'Waking up the translation server (can take up to a minute after inactivity)...',
     stopRecording: 'Stop Recording',
     translatingBtn: 'Translating...',
     startVoice: 'Start Voice Translation',
@@ -770,6 +796,7 @@ const UI_STRINGS: Record<UiLang, UiStrings> = {
     inputting: 'ਦਰਜ ਹੋ ਰਿਹਾ ਹੈ...',
     speakNow: 'ਹੁਣ ਅੰਗਰੇਜ਼ੀ ਜਾਂ ਪੰਜਾਬੀ ਵਿੱਚ ਬੋਲੋ...',
     tapAndSpeak: 'ਸਮਾਰਟ ਪਛਾਣ: ਅੰਗਰੇਜ਼ੀ ਜਾਂ ਪੰਜਾਬੀ ਬੋਲੋ',
+    wakingUp: 'ਅਨੁਵਾਦ ਸਰਵਰ ਜਾਗ ਰਿਹਾ ਹੈ (ਨਾ-ਸਰਗਰਮੀ ਤੋਂ ਬਾਅਦ ਇੱਕ ਮਿੰਟ ਤੱਕ ਲੱਗ ਸਕਦਾ ਹੈ)...',
     stopRecording: 'ਰਿਕਾਰਡਿੰਗ ਬੰਦ ਕਰੋ',
     translatingBtn: 'ਅਨੁਵਾਦ ਹੋ ਰਿਹਾ ਹੈ...',
     startVoice: 'ਵੌਇਸ ਅਨੁਵਾਦ ਸ਼ੁਰੂ ਕਰੋ',
@@ -1561,7 +1588,7 @@ const TranslationAppMobile = (): JSX.Element => {
       // into the other language automatically, entirely via the local AI
       // backend (IndicTrans2). No Google Translate fallback - the backend
       // must be running and reachable for this to work.
-      let sourceLang = await detectLanguageLocalAI(text);
+      let sourceLang = await detectLanguageLocalAI(text, () => setStatus(T.wakingUp));
       // Normalize to just 'en'/'pa' - the detector can return other
       // language codes (e.g. 'hi') which this app only handles as English.
       sourceLang = sourceLang === 'pa' ? 'pa' : 'en';
