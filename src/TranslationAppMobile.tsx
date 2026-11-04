@@ -94,9 +94,13 @@ const loadPersistedBackendUrl = async (): Promise<string> => {
   return currentBackendUrl;
 };
 
-// Shared secret the backend can require via BACKEND_API_KEY once it's
-// exposed to the public internet (see ai_backend_server.py) - empty by
-// default, which matches the backend's own no-auth local/LAN dev mode.
+// Optional shared secret some self-hosted/private deployments of
+// ai_backend_server.py may still choose to check themselves - the public
+// deployment this app ships against does NOT require it (a per-device-only
+// key can never work for a link shared with other people, since nobody else
+// has it). Left in as an optional advanced field so a self-hosted server can
+// still gate access if its operator wants to; sent as a header when set,
+// ignored by the public backend otherwise.
 const BACKEND_API_KEY_STORAGE_KEY = 'ai_backend_api_key';
 
 let currentApiKey = '';
@@ -132,10 +136,9 @@ const backendHeaders = (extra?: Record<string, string>): Record<string, string> 
   return headers;
 };
 
-// A 401 almost always means the API Key field in Settings is empty or wrong
-// on THIS device/browser (API key storage is per-device, not synced), which
-// is easy to miss since every other symptom looks identical to a generic
-// server error - spell it out so users don't have to guess.
+// A 401 means a self-hosted backend is enforcing its own API key and this
+// device's Settings > API Key field doesn't match it - not applicable to the
+// public deployment, which no longer requires one.
 const describeBackendError = (prefix: string, status: number): string =>
   status === 401
     ? `${prefix} failed: missing or incorrect API key - check Settings > API Key (401)`

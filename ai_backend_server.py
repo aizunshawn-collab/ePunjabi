@@ -73,13 +73,14 @@ CORS(app)  # Allow requests from your web app
 
 # --- Public-deployment hardening -------------------------------------------
 # This server has no built-in user accounts, and translation/speech requests
-# are expensive (translation model, Whisper speech recognition). Once this is reachable
-# from the internet rather than just a LAN, it needs at least a shared-secret
-# API key and basic rate limiting, or anyone who finds the URL can run up
-# compute costs or take the server down. Both are no-ops for local
-# development (no key configured) so `python ai_backend_server.py` still
-# works out of the box on localhost/LAN.
-API_KEY = os.environ.get('BACKEND_API_KEY', '').strip()
+# are expensive (translation model, Whisper speech recognition). It used to
+# also require a shared-secret API key, but that key could only ever be
+# configured on one device at a time (whoever typed it into Settings), so
+# every other visitor to the public web/app link got a 401 on every request.
+# A server-side Origin/Referer check can't fix this - those headers are
+# trivially spoofable, so they can't actually distinguish "the web build" from
+# any other caller. The rate limiter below is the real (and only) defense
+# against one caller running up compute costs or taking the server down.
 # QA-only route (bypasses the glossary) - not needed by the shipped app, so
 # keep it off unless explicitly enabled, to shrink the public attack surface.
 ENABLE_DEBUG_ROUTES = os.environ.get('ENABLE_DEBUG_ROUTES', '').strip() == '1'
@@ -87,16 +88,16 @@ ENABLE_DEBUG_ROUTES = os.environ.get('ENABLE_DEBUG_ROUTES', '').strip() == '1'
 # any handler - a cheap defense against payload-based DoS.
 app.config['MAX_CONTENT_LENGTH'] = 20 * 1024 * 1024  # 20 MB
 
-# Simple in-memory sliding-window limiter, keyed by caller IP (or API key if
-# provided). Not distributed/multi-process safe, but this server runs single-
-# process - good enough to stop one client from hammering it.
+# Simple in-memory sliding-window limiter, keyed by caller IP. Not
+# distributed/multi-process safe, but this server runs single-process - good
+# enough to stop one client from hammering it.
 _RATE_LIMIT_WINDOW_SECONDS = 60
 _RATE_LIMIT_MAX_REQUESTS = int(os.environ.get('RATE_LIMIT_MAX_REQUESTS', 20))
 _rate_limit_hits: dict = {}
 
 
 def _rate_limit_key() -> str:
-    return request.headers.get('X-API-Key') or request.remote_addr or 'unknown'
+    return request.remote_addr or 'unknown'
 
 
 def _is_rate_limited() -> bool:
@@ -123,21 +124,19 @@ def _start_request_timer():
 
 
 @app.before_request
-def _enforce_api_key_and_rate_limit():
+def _enforce_rate_limit():
     # Browsers send an unauthenticated OPTIONS preflight before the real
-    # cross-origin request - it never carries the custom X-API-Key header,
-    # so rejecting it here would make flask_cors's own CORS headers never
-    # reach the browser (a non-2xx preflight response fails CORS entirely,
-    # regardless of what headers are attached to it). The real request right
-    # after this preflight is still fully subject to the checks below.
+    # cross-origin request - rejecting it here would make flask_cors's own
+    # CORS headers never reach the browser (a non-2xx preflight response
+    # fails CORS entirely, regardless of what headers are attached to it).
+    # The real request right after this preflight is still fully subject to
+    # the rate limit below.
     if request.method == 'OPTIONS':
         return None
     if request.path in _UNAUTHENTICATED_ROUTES:
         return None
     if request.path in _DEBUG_ONLY_ROUTES and not ENABLE_DEBUG_ROUTES:
         return jsonify({'error': 'not found'}), 404
-    if API_KEY and request.headers.get('X-API-Key') != API_KEY:
-        return jsonify({'error': 'Invalid or missing API key'}), 401
     if _is_rate_limited():
         return jsonify({'error': 'Rate limit exceeded, please slow down'}), 429
     return None
@@ -190,10 +189,6 @@ def _log_telemetry(response):
     return response
 
 
-if not API_KEY:
-    print("⚠️  BACKEND_API_KEY is not set - server is running with NO authentication.")
-    print("   Fine for local/LAN development, but set BACKEND_API_KEY before exposing")
-    print("   this server to the public internet.")
 if google_translate_fallback.is_configured():
     print("ℹ️  GOOGLE_TRANSLATE_API_KEY is set - /translate's verify path may fall back")
     print("   to Google Translate when it scores more confident than IndicTrans2.")
