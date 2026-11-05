@@ -202,41 +202,16 @@ const audioRecorderPlayer = new AudioRecorderPlayer();
 const TTS_OUTPUT_PATH = `${RNFS.CachesDirectoryPath}/tts_output.mp3`;
 
 // Browsers only allow audio (<audio> elements and speechSynthesis alike) to
-// play with sound as a direct result of a user gesture. The Translate/mic
-// buttons ARE real gestures, but by the time translateAndSpeak() reaches the
-// actual playback call, one or two network round-trips (translation, then
-// TTS) have already happened - long enough, especially against a cold-started
-// backend, for the browser to decide the gesture expired and silently block
-// playback with no visible error (this is why the web build "doesn't talk
-// back" with no error shown). Unlock playback once, on the very first
-// tap/click anywhere in the app: that one genuine gesture is enough to permit
-// all later programmatic playback for the rest of the page's lifetime in
-// every major browser.
-const unlockWebAudioPlayback = () => {
-  try {
-    // Hand-built 46-byte silent WAV (1 mono 16-bit sample) - avoids
-    // depending on a hand-typed base64 string being valid.
-    const silentWavBytes = new Uint8Array([
-      0x52, 0x49, 0x46, 0x46, 0x26, 0x00, 0x00, 0x00, 0x57, 0x41, 0x56, 0x45,
-      0x66, 0x6d, 0x74, 0x20, 0x10, 0x00, 0x00, 0x00, 0x01, 0x00, 0x01, 0x00,
-      0x44, 0xac, 0x00, 0x00, 0x88, 0x58, 0x01, 0x00, 0x02, 0x00, 0x10, 0x00,
-      0x64, 0x61, 0x74, 0x61, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00,
-    ]);
-    const url = URL.createObjectURL(new Blob([silentWavBytes], {type: 'audio/wav'}));
-    const silence = new Audio(url);
-    silence
-      .play()
-      .catch(() => {})
-      .finally(() => URL.revokeObjectURL(url));
-  } catch {
-    // Best-effort - worst case, playback falls back to whatever the
-    // browser's autoplay policy allows anyway.
-  }
-  try {
-    window.speechSynthesis?.speak(new SpeechSynthesisUtterance(''));
-  } catch {
-    // Best-effort - ignore.
-  }
+// play with sound as a direct result of a user gesture, and strict mobile
+// engines (iOS Safari/Chrome) go further - they permanently unlock only the
+// SPECIFIC element .play() was called on, not the page as a whole. Call this
+// synchronously, as the very first thing, inside every real tap/click
+// handler that can eventually lead to TTS playback (Translate button, mic
+// stop, photo scan) - see web/shims/tts.ts's prime()/sharedAudioElement for
+// the web-only implementation this delegates to. No-op on native (the real
+// 'react-native-tts' module has no such method).
+const primeWebAudio = () => {
+  (Tts as unknown as {prime?: () => void}).prime?.();
 };
 
 // Plays a local audio file to completion via the same recorder/player
@@ -1084,10 +1059,6 @@ const TranslationAppMobile = (): JSX.Element => {
     initializeVoice();
     initializeTts();
 
-    if (Platform.OS === 'web') {
-      document.addEventListener('pointerdown', unlockWebAudioPlayback, {once: true});
-    }
-
     loadPersistedBackendUrl().then(async url => {
       setServerUrlDraft(url);
       setServerStatus('testing');
@@ -1101,9 +1072,6 @@ const TranslationAppMobile = (): JSX.Element => {
       Tts.removeAllListeners('tts-start');
       Tts.removeAllListeners('tts-finish');
       Tts.removeAllListeners('tts-cancel');
-      if (Platform.OS === 'web') {
-        document.removeEventListener('pointerdown', unlockWebAudioPlayback);
-      }
     };
   }, []);
 
@@ -1310,6 +1278,7 @@ const TranslationAppMobile = (): JSX.Element => {
   // if the backend isn't reachable, decided upfront via a quick health check
   // so we never end up having recorded audio we can't send anywhere.
   const startVoiceRecognition = async () => {
+    primeWebAudio();
     setInputText('');
     setTranslatedText('');
     setIsProcessingSpeech(false);
@@ -1335,6 +1304,7 @@ const TranslationAppMobile = (): JSX.Element => {
   };
 
   const stopVoiceRecognition = async () => {
+    primeWebAudio();
     if (recordingModeRef.current === 'ondevice') {
       await stopOnDeviceVoiceRecognition();
       return;
@@ -1385,6 +1355,7 @@ const TranslationAppMobile = (): JSX.Element => {
   };
 
   const submitTypedText = () => {
+    primeWebAudio();
     const text = typedText.trim();
     if (!text) {
       return;
@@ -1453,6 +1424,7 @@ const TranslationAppMobile = (): JSX.Element => {
   };
 
   const startPhotoScan = () => {
+    primeWebAudio();
     // On web there's no real OS-level "camera vs gallery" distinction to
     // recreate - a plain file input already makes the browser/OS show its
     // own native chooser (camera, photo library, files, etc. depending on
@@ -2154,7 +2126,10 @@ const TranslationAppMobile = (): JSX.Element => {
                   <TouchableOpacity
                     key={index}
                     style={styles.phraseButton}
-                    onPress={() => speakTranslation(phrase.punjabi, 'pa')}>
+                    onPress={() => {
+                      primeWebAudio();
+                      speakTranslation(phrase.punjabi, 'pa');
+                    }}>
                     <Text style={styles.phraseText}>{phrase.punjabi}</Text>
                   </TouchableOpacity>
                 ))}

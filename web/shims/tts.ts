@@ -2,14 +2,65 @@
 // SpeechSynthesis API. Mirrors the subset of the real library's API surface
 // TranslationAppMobile.tsx uses: setDefaultLanguage/Pitch/Rate, speak,
 // getInitStatus, voices, addEventListener/removeAllListeners for
-// 'tts-start'/'tts-finish'/'tts-cancel'.
+// 'tts-start'/'tts-finish'/'tts-cancel', plus a web-only prime().
 type TtsEvent = 'tts-start' | 'tts-finish' | 'tts-cancel';
+
+// Strict mobile engines (iOS Safari AND iOS Chrome - both WebKit under the
+// hood) only ever unlock a SPECIFIC <audio> element, permanently, the first
+// time ITS OWN .play() is called from directly inside a user gesture -
+// creating a fresh `new Audio(...)` later (even moments later, even from
+// another real gesture) does NOT inherit that unlock and silently produces
+// no sound. Reusing one persistent element for every playback (priming it
+// early via prime(), then just changing .src later) avoids this entirely.
+//
+// Hand-built 46-byte silent WAV (1 mono 16-bit sample) given to the element
+// up front - calling .play() on a brand new <audio> with NO src at all
+// resolves/rejects inconsistently across browsers (some reject immediately,
+// others leave the promise pending indefinitely), so priming always needs
+// real, if silent, decodable media rather than an empty element.
+const SILENT_WAV_BYTES = new Uint8Array([
+  0x52, 0x49, 0x46, 0x46, 0x26, 0x00, 0x00, 0x00, 0x57, 0x41, 0x56, 0x45,
+  0x66, 0x6d, 0x74, 0x20, 0x10, 0x00, 0x00, 0x00, 0x01, 0x00, 0x01, 0x00,
+  0x44, 0xac, 0x00, 0x00, 0x88, 0x58, 0x01, 0x00, 0x02, 0x00, 0x10, 0x00,
+  0x64, 0x61, 0x74, 0x61, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00,
+]);
+
+let sharedAudioElement: HTMLAudioElement | null = null;
+const getSharedAudioElement = (): HTMLAudioElement => {
+  if (!sharedAudioElement) {
+    const url = URL.createObjectURL(new Blob([SILENT_WAV_BYTES], {type: 'audio/wav'}));
+    sharedAudioElement = new Audio(url);
+  }
+  return sharedAudioElement;
+};
 
 class TtsWeb {
   private language = 'en-US';
   private pitch = 1;
   private rate = 1;
   private listeners: Record<string, Array<() => void>> = {};
+
+  // Call synchronously from inside a real tap/click handler (before any
+  // `await`), as early as possible - e.g. the Translate/mic buttons - so the
+  // shared <audio> element and speechSynthesis are both already "unlocked"
+  // by the time actual playback is needed later in that same action, no
+  // matter how many network round-trips happen in between.
+  prime(): void {
+    try {
+      const el = getSharedAudioElement();
+      el.play().catch(() => {
+        // Best-effort - worst case, real playback later falls back to
+        // whatever the browser's autoplay policy allows anyway.
+      });
+    } catch {
+      // Best-effort - ignore.
+    }
+    try {
+      window.speechSynthesis?.speak(new SpeechSynthesisUtterance(''));
+    } catch {
+      // Best-effort - ignore.
+    }
+  }
 
   async setDefaultLanguage(lang: string): Promise<void> {
     this.language = lang;
@@ -99,7 +150,10 @@ class TtsWeb {
       if (typeof data.audioContent !== 'string') {
         return false;
       }
-      const audio = new Audio(`data:audio/mp3;base64,${data.audioContent}`);
+      // Reuse the one shared/primed element rather than `new Audio(...)` -
+      // see the comment on sharedAudioElement above for why.
+      const audio = getSharedAudioElement();
+      audio.src = `data:audio/mp3;base64,${data.audioContent}`;
       this.emit('tts-start');
       await new Promise<void>(resolve => {
         audio.onended = () => {
