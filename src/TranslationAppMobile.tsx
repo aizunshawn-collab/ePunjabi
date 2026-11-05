@@ -201,6 +201,44 @@ const audioRecorderPlayer = new AudioRecorderPlayer();
 // Where a backend-synthesized Punjabi TTS clip is written before playback.
 const TTS_OUTPUT_PATH = `${RNFS.CachesDirectoryPath}/tts_output.mp3`;
 
+// Browsers only allow audio (<audio> elements and speechSynthesis alike) to
+// play with sound as a direct result of a user gesture. The Translate/mic
+// buttons ARE real gestures, but by the time translateAndSpeak() reaches the
+// actual playback call, one or two network round-trips (translation, then
+// TTS) have already happened - long enough, especially against a cold-started
+// backend, for the browser to decide the gesture expired and silently block
+// playback with no visible error (this is why the web build "doesn't talk
+// back" with no error shown). Unlock playback once, on the very first
+// tap/click anywhere in the app: that one genuine gesture is enough to permit
+// all later programmatic playback for the rest of the page's lifetime in
+// every major browser.
+const unlockWebAudioPlayback = () => {
+  try {
+    // Hand-built 46-byte silent WAV (1 mono 16-bit sample) - avoids
+    // depending on a hand-typed base64 string being valid.
+    const silentWavBytes = new Uint8Array([
+      0x52, 0x49, 0x46, 0x46, 0x26, 0x00, 0x00, 0x00, 0x57, 0x41, 0x56, 0x45,
+      0x66, 0x6d, 0x74, 0x20, 0x10, 0x00, 0x00, 0x00, 0x01, 0x00, 0x01, 0x00,
+      0x44, 0xac, 0x00, 0x00, 0x88, 0x58, 0x01, 0x00, 0x02, 0x00, 0x10, 0x00,
+      0x64, 0x61, 0x74, 0x61, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00,
+    ]);
+    const url = URL.createObjectURL(new Blob([silentWavBytes], {type: 'audio/wav'}));
+    const silence = new Audio(url);
+    silence
+      .play()
+      .catch(() => {})
+      .finally(() => URL.revokeObjectURL(url));
+  } catch {
+    // Best-effort - worst case, playback falls back to whatever the
+    // browser's autoplay policy allows anyway.
+  }
+  try {
+    window.speechSynthesis?.speak(new SpeechSynthesisUtterance(''));
+  } catch {
+    // Best-effort - ignore.
+  }
+};
+
 // Plays a local audio file to completion via the same recorder/player
 // instance used for voice input, resolving once playback finishes.
 const playAudioFile = (path: string): Promise<void> => {
@@ -1046,6 +1084,10 @@ const TranslationAppMobile = (): JSX.Element => {
     initializeVoice();
     initializeTts();
 
+    if (Platform.OS === 'web') {
+      document.addEventListener('pointerdown', unlockWebAudioPlayback, {once: true});
+    }
+
     loadPersistedBackendUrl().then(async url => {
       setServerUrlDraft(url);
       setServerStatus('testing');
@@ -1059,6 +1101,9 @@ const TranslationAppMobile = (): JSX.Element => {
       Tts.removeAllListeners('tts-start');
       Tts.removeAllListeners('tts-finish');
       Tts.removeAllListeners('tts-cancel');
+      if (Platform.OS === 'web') {
+        document.removeEventListener('pointerdown', unlockWebAudioPlayback);
+      }
     };
   }, []);
 
@@ -1843,13 +1888,19 @@ const TranslationAppMobile = (): JSX.Element => {
                   <Text style={styles.modeToggleText}>{T.scanPhoto}</Text>
                 </TouchableOpacity>
 
-                <TouchableOpacity
-                  style={styles.modeToggle}
-                  onPress={startDocumentTranslate}
-                  disabled={isLoading || isListening || isProcessingSpeech || isScanningPhoto || isProcessingDocument}>
-                  <Icon name="description" size={16} color={theme.accent} style={styles.iconInline} />
-                  <Text style={styles.modeToggleText}>{T.documentOption}</Text>
-                </TouchableOpacity>
+                {/* "Translate Document" is temporarily disabled on the web
+                    build only (has a number of unresolved issues there) -
+                    still fully available on Android. See startDocumentTranslate
+                    and friends below, left intact/untouched for Android. */}
+                {Platform.OS !== 'web' && (
+                  <TouchableOpacity
+                    style={styles.modeToggle}
+                    onPress={startDocumentTranslate}
+                    disabled={isLoading || isListening || isProcessingSpeech || isScanningPhoto || isProcessingDocument}>
+                    <Icon name="description" size={16} color={theme.accent} style={styles.iconInline} />
+                    <Text style={styles.modeToggleText}>{T.documentOption}</Text>
+                  </TouchableOpacity>
+                )}
               </View>
             )}
 
