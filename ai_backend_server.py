@@ -1942,6 +1942,17 @@ PA_HI_UR_MIN_PROB = 0.1
 # catch) of real Punjabi/Hindi/Urdu speech the LID model was simply never
 # going to flag. Re-transcribing with the Punjabi model and picking whichever
 # scores higher is a direct, LID-independent tiebreaker - see speech_to_text.
+# Now a SECONDARY backstop only - detect_spoken_language's positive-English
+# requirement (see its docstring, 2026-11-06) is the primary fix, since two
+# other real clips that same day proved the LID can misroute to 'en' at
+# HIGH English-ASR confidence (0.71-0.72, both well above this 0.6 bar) when
+# its own top-1 guess is a wrong language ('sk'/'cs') rather than 'en' at
+# all - this check alone could not have caught those. Note
+# IndicConformerNeMoASR.transcribe()'s confidence is a fixed 0.9 placeholder
+# (see its docstring), not a real per-clip measurement, so in practice this
+# comparison always resolves to 'pa' whenever it fires at all - acceptable
+# given the project's asymmetric cost rule (false 'pa' is far cheaper than
+# false 'en').
 ENGLISH_AUTO_CONFIRM_MIN_CONFIDENCE = 0.6
 
 _pa_hi_ur_class_indices = None  # populated on first use, see _get_pa_hi_ur_indices
@@ -1979,10 +1990,21 @@ def detect_spoken_language(audio_array, sample_rate=16000):
     OR (since the model is often broadly unconfident on short/accented real
     clips, see PA_HI_UR_MIN_PROB above) pa/hi/ur's own posterior probability
     clearing a low bar even when some unrelated language narrowly outranks it.
+    English now has to be POSITIVELY detected rather than being the default
+    fallback for "anything not confidently pa/hi/ur" - confirmed via live
+    production logs (2026-11-06) that on short real Punjabi clips this LID
+    model frequently top-1-guesses a totally unrelated language it has never
+    been asked about ('sk' at 0.59, 'cs' at 0.36 - also seen historically:
+    'ja', 'lt', 'nn'), each with a near-zero pa/hi/ur_prob too (0.003-0.018,
+    both under PA_HI_UR_MIN_PROB). None of those misfires is 'en' either, so
+    only requiring a window to positively name 'en' - instead of defaulting
+    to 'en' whenever pa/hi/ur wasn't confidently named - stops these clips
+    from being silently misrouted to the English-only ASR model while still
+    reflecting the project's deliberate asymmetric bias (false 'pa' is far
+    cheaper than false 'en').
     Returns (lang, iso_code, confidence) - iso_code/confidence are the
     highest-confidence window's top-1 values, for logging only; the actual
-    `lang` decision follows the any-window-is-Punjabi rule above, not just
-    the top window."""
+    `lang` decision follows the rules above, not just the top window."""
     model = get_language_id_model()
     pa_hi_ur_idx = _get_pa_hi_ur_indices(model)
     window_len = int(LID_WINDOW_SECONDS * sample_rate)
@@ -2004,7 +2026,9 @@ def detect_spoken_language(audio_array, sample_rate=16000):
             if pa_hi_ur_prob >= PA_HI_UR_MIN_PROB:
                 pa_like = True
 
-    lang = 'pa' if pa_like or any(iso in ('pa', 'hi', 'ur') for iso, _ in results) else 'en'
+    is_punjabi_like = pa_like or any(iso in ('pa', 'hi', 'ur') for iso, _ in results)
+    is_english_like = any(iso == 'en' for iso, _ in results)
+    lang = 'en' if is_english_like and not is_punjabi_like else 'pa'
     top_iso, top_confidence = max(results, key=lambda r: r[1])
     return lang, top_iso, top_confidence
 
