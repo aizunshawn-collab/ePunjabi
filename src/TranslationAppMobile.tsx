@@ -599,6 +599,10 @@ interface UiStrings {
   inputting: string;
   speakNow: string;
   tapAndSpeak: string;
+  speakNowEnglishOnly: string;
+  speakNowPunjabiOnly: string;
+  speakOnlyEnglish: string;
+  speakOnlyPunjabi: string;
   wakingUp: string;
   stopRecording: string;
   translatingBtn: string;
@@ -704,6 +708,10 @@ const UI_STRINGS: Record<UiLang, UiStrings> = {
     inputting: 'Inputting...',
     speakNow: 'Speak now in English or Punjabi...',
     tapAndSpeak: 'SmartDetection: speak English or Punjabi',
+    speakNowEnglishOnly: 'Speak now in English...',
+    speakNowPunjabiOnly: 'Speak now in Punjabi...',
+    speakOnlyEnglish: 'Speak only in English',
+    speakOnlyPunjabi: 'Speak only in Punjabi',
     wakingUp: 'Waking up the translation server (can take up to a minute after inactivity)...',
     stopRecording: 'Stop Recording',
     translatingBtn: 'Translating...',
@@ -810,6 +818,10 @@ const UI_STRINGS: Record<UiLang, UiStrings> = {
     inputting: 'ਦਰਜ ਹੋ ਰਿਹਾ ਹੈ...',
     speakNow: 'ਹੁਣ ਅੰਗਰੇਜ਼ੀ ਜਾਂ ਪੰਜਾਬੀ ਵਿੱਚ ਬੋਲੋ...',
     tapAndSpeak: 'ਸਮਾਰਟ ਪਛਾਣ: ਅੰਗਰੇਜ਼ੀ ਜਾਂ ਪੰਜਾਬੀ ਬੋਲੋ',
+    speakNowEnglishOnly: 'ਹੁਣ ਸਿਰਫ਼ ਅੰਗਰੇਜ਼ੀ ਵਿੱਚ ਬੋਲੋ...',
+    speakNowPunjabiOnly: 'ਹੁਣ ਸਿਰਫ਼ ਪੰਜਾਬੀ ਵਿੱਚ ਬੋਲੋ...',
+    speakOnlyEnglish: 'ਸਿਰਫ਼ ਅੰਗਰੇਜ਼ੀ ਵਿੱਚ ਬੋਲੋ',
+    speakOnlyPunjabi: 'ਸਿਰਫ਼ ਪੰਜਾਬੀ ਵਿੱਚ ਬੋਲੋ',
     wakingUp: 'ਅਨੁਵਾਦ ਸਰਵਰ ਜਾਗ ਰਿਹਾ ਹੈ (ਨਾ-ਸਰਗਰਮੀ ਤੋਂ ਬਾਅਦ ਇੱਕ ਮਿੰਟ ਤੱਕ ਲੱਗ ਸਕਦਾ ਹੈ)...',
     stopRecording: 'ਰਿਕਾਰਡਿੰਗ ਬੰਦ ਕਰੋ',
     translatingBtn: 'ਅਨੁਵਾਦ ਹੋ ਰਿਹਾ ਹੈ...',
@@ -975,7 +987,16 @@ const TranslationAppMobile = (): JSX.Element => {
   const [selectedVoice, setSelectedVoice] = useState('pa-IN-Wavenet-A');
   const [inputMode, setInputMode] = useState<'voice' | 'text'>('voice');
   const [typedText, setTypedText] = useState('');
-  const [inputLanguage, setInputLanguage] = useState('en');
+  // Starts as 'pa', not 'en': this only affects the FIRST on-device-fallback
+  // voice attempt in 'auto' STT mode (see startOnDeviceVoiceRecognition
+  // below), before any real language has ever been detected - defaulting to
+  // English there forced the browser's native speech recognizer to listen
+  // for English phonetics on a user's first (possibly Punjabi) utterance,
+  // mangling it into English-sounding text that then "detected" as English.
+  // Matches the same asymmetric bias already used server-side (see
+  // detect_spoken_language's docstring in ai_backend_server.py): a wrong
+  // Punjabi guess is far cheaper than a wrong English guess for this app.
+  const [inputLanguage, setInputLanguage] = useState('pa');
   const [outputLanguage, setOutputLanguage] = useState('pa');
   const [sttLanguageMode, setSttLanguageMode] = useState<'auto' | 'en-US' | 'pa-IN'>('auto');
   const [speakerGender, setSpeakerGender] = useState<'m' | 'f'>('m');
@@ -1825,8 +1846,16 @@ const TranslationAppMobile = (): JSX.Element => {
 
                     <Text style={styles.voiceHint}>
                       {isListening
-                        ? T.speakNow
-                        : T.tapAndSpeak}
+                        ? sttLanguageMode === 'en-US'
+                          ? T.speakNowEnglishOnly
+                          : sttLanguageMode === 'pa-IN'
+                            ? T.speakNowPunjabiOnly
+                            : T.speakNow
+                        : sttLanguageMode === 'en-US'
+                          ? T.speakOnlyEnglish
+                          : sttLanguageMode === 'pa-IN'
+                            ? T.speakOnlyPunjabi
+                            : T.tapAndSpeak}
                     </Text>
                   </>
                 ) : (
