@@ -1038,6 +1038,13 @@ GLOSSARY = {
     },
     ('pa', 'en'): {
         'ਸਤ ਸ੍ਰੀ ਅਕਾਲ': 'Hello',
+        # Real ASR output for this greeting (confirmed via live production
+        # logs, 2026-11-06) includes the "ਿ" matra on the first word - the
+        # standard/full Gurmukhi spelling - which the key above (missing it)
+        # never matched, so this fell through to the raw model and came back
+        # as a transliteration ("Sat Sri Akal") instead of an actual
+        # translation. Both spellings are kept since either could occur.
+        'ਸਤਿ ਸ੍ਰੀ ਅਕਾਲ': 'Hello',
         'ਧੰਨਵਾਦ': 'Thank you',
         'ਬਹੁਤ ਧੰਨਵਾਦ': 'Thank you very much',
         'ਕਿਰਪਾ ਕਰਕੇ': 'Please',
