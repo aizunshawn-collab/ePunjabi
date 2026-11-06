@@ -1922,6 +1922,44 @@ def get_language_id_model():
 
 LID_WINDOW_SECONDS = 3.0
 
+# Minimum posterior probability (out of 107 VoxLingua107 classes) for pa/hi/ur
+# to count as "present" in a window even when it's NOT the single top-ranked
+# class. Confirmed via live production logs (2026-11-06) that on short,
+# accented real-world clips this LID model is often broadly unconfident and
+# ranks the correct language 2nd-10th (top-1 guesses seen: 'sk', 'ja', 'cs',
+# 'lt', 'nn' - all unrelated, all <0.4 confidence) rather than 1st, so the
+# old any-window-TOP-1-is-pa/hi/ur rule below never triggered for genuine
+# Punjabi speech. 0.1 (~11x random chance across 107 classes) is deliberately
+# low given the documented asymmetric bias - a false 'pa' is far cheaper than
+# a false 'en' for this app.
+PA_HI_UR_MIN_PROB = 0.1
+
+# Auto-detect only: when the LID model routes a clip to English AND the
+# English ASR model itself comes back with low confidence, that combination
+# is the exact signature (confirmed via live production logs, 2026-11-06:
+# real Punjabi -> "I do see...." at only 0.43 confidence, LID's own
+# pa_hi_ur_prob for that clip was just 0.002 - too low for the check above to
+# catch) of real Punjabi/Hindi/Urdu speech the LID model was simply never
+# going to flag. Re-transcribing with the Punjabi model and picking whichever
+# scores higher is a direct, LID-independent tiebreaker - see speech_to_text.
+ENGLISH_AUTO_CONFIRM_MIN_CONFIDENCE = 0.6
+
+_pa_hi_ur_class_indices = None  # populated on first use, see _get_pa_hi_ur_indices
+
+
+def _get_pa_hi_ur_indices(model):
+    """Class indices for Punjabi/Hindi/Urdu in the loaded LID model's label
+    set, so detect_spoken_language can read their actual probability instead
+    of only acting when one of them wins the full 107-way argmax."""
+    global _pa_hi_ur_class_indices
+    if _pa_hi_ur_class_indices is None:
+        ind2lab = model.hparams.label_encoder.ind2lab
+        _pa_hi_ur_class_indices = [
+            i for i, lab in ind2lab.items()
+            if lab.split(':')[0].strip().lower() in ('pa', 'hi', 'ur')
+        ]
+    return _pa_hi_ur_class_indices
+
 
 def detect_spoken_language(audio_array, sample_rate=16000):
     """Run SpeechBrain VoxLingua107 LID on a mono float32 16kHz numpy array.
@@ -1937,24 +1975,36 @@ def detect_spoken_language(audio_array, sample_rate=16000):
     notes, 2026-10-19 real-audio re-test), but Parakeet (English-only) has no
     ability to transcribe Punjabi content at all, so a false positive for
     'pa' is far cheaper than a false positive for 'en'.
+    "Looks like" is judged two ways per window: the single top-ranked class,
+    OR (since the model is often broadly unconfident on short/accented real
+    clips, see PA_HI_UR_MIN_PROB above) pa/hi/ur's own posterior probability
+    clearing a low bar even when some unrelated language narrowly outranks it.
     Returns (lang, iso_code, confidence) - iso_code/confidence are the
-    highest-confidence window's values, for logging only; the actual `lang`
-    decision follows the any-window-is-Punjabi rule above, not just the top
-    window."""
+    highest-confidence window's top-1 values, for logging only; the actual
+    `lang` decision follows the any-window-is-Punjabi rule above, not just
+    the top window."""
     model = get_language_id_model()
+    pa_hi_ur_idx = _get_pa_hi_ur_indices(model)
     window_len = int(LID_WINDOW_SECONDS * sample_rate)
     windows = [audio_array[i:i + window_len] for i in range(0, len(audio_array), window_len)]
     windows = [w for w in windows if len(w) >= sample_rate] or [audio_array]
 
     results = []
+    pa_like = False
     for w in windows:
         audio_tensor = torch.from_numpy(w).unsqueeze(0)
-        _, log_likelihood, _, text_lab = model.classify_batch(audio_tensor)
+        out_prob, log_likelihood, _, text_lab = model.classify_batch(audio_tensor)
         iso_code = text_lab[0].split(':')[0].strip().lower()
         confidence = float(log_likelihood.exp()[0])
         results.append((iso_code, confidence))
 
-    lang = 'pa' if any(iso in ('pa', 'hi', 'ur') for iso, _ in results) else 'en'
+        if pa_hi_ur_idx:
+            pa_hi_ur_prob = float(out_prob.exp()[0][pa_hi_ur_idx].max())
+            print(f"   🩺 LID window: top={iso_code} ({confidence:.2f}), pa/hi/ur_prob={pa_hi_ur_prob:.3f}")
+            if pa_hi_ur_prob >= PA_HI_UR_MIN_PROB:
+                pa_like = True
+
+    lang = 'pa' if pa_like or any(iso in ('pa', 'hi', 'ur') for iso, _ in results) else 'en'
     top_iso, top_confidence = max(results, key=lambda r: r[1])
     return lang, top_iso, top_confidence
 
@@ -2448,6 +2498,13 @@ def speech_to_text():
                     os.unlink(temp_path)
                     return jsonify({'error': 'Language detection model failed to load - check server logs'}), 503
                 lid_audio = decode_audio(temp_path, sampling_rate=16000)
+                # Diagnostic only (no audio persisted): a wildly-off duration
+                # vs. the real clip length, or near-zero RMS, points at a
+                # decode/container bug (e.g. iOS Safari's fragmented-mp4
+                # MediaRecorder output) rather than a genuine LID mistake.
+                lid_duration = len(lid_audio) / 16000
+                lid_rms = float(np.sqrt(np.mean(lid_audio.astype('float64') ** 2))) if len(lid_audio) else 0.0
+                print(f"   🩺 Decoded audio: {lid_duration:.2f}s, RMS={lid_rms:.4f}, samples={len(lid_audio)}")
                 asr_language, detected_iso, detected_prob = detect_spoken_language(lid_audio)
                 print(f"   🔎 Auto-detected language: {detected_iso} ({detected_prob:.2f}) -> using '{asr_language}'")
 
@@ -2504,10 +2561,33 @@ def speech_to_text():
 
             audio_array = decode_audio(temp_path, sampling_rate=16000)
             transcript, confidence = unified_model.transcribe(audio_array)
-            transcript = convert_english_number_words_to_digits(transcript)
-            transcript = correct_kaur_mishearing(transcript)
             detected_lang = 'en'
             model_name = 'Parakeet-unified-0.6b'
+            numeral_uncertain = False
+
+            # See ENGLISH_AUTO_CONFIRM_MIN_CONFIDENCE above - only applies
+            # when the caller genuinely asked for 'auto' (never overrides an
+            # explicit 'en' request) and a Punjabi model is actually loaded.
+            if (language == 'auto' and confidence < ENGLISH_AUTO_CONFIRM_MIN_CONFIDENCE
+                    and (indicconformer_nemo_model is not None or indicconformer_model is not None)):
+                if indicconformer_nemo_model is not None:
+                    pa_transcript, pa_confidence = indicconformer_nemo_model.transcribe(audio_array)
+                    pa_model_name = 'IndicConformer-NeMo-RNNT'
+                else:
+                    pa_transcript, pa_confidence = indicconformer_model.transcribe(audio_array)
+                    pa_model_name = 'IndicConformer'
+                print(f"   🩺 Low-confidence English auto-detect ({confidence:.2f}) - confirming against Punjabi: {pa_confidence:.2f}")
+                if pa_confidence >= confidence:
+                    print(f"   🔁 Switching 'en' -> 'pa' (pa confidence {pa_confidence:.2f} >= en confidence {confidence:.2f})")
+                    detected_lang = 'pa'
+                    transcript = pa_transcript
+                    confidence = pa_confidence
+                    model_name = pa_model_name
+                    numeral_uncertain = detect_unreliable_numeral(transcript)
+
+            if detected_lang == 'en':
+                transcript = convert_english_number_words_to_digits(transcript)
+                transcript = correct_kaur_mishearing(transcript)
 
             print(f"   ✅ Detected {detected_lang} (confidence: {confidence:.2f})")
             print(f"   📝 Transcript: {transcript[:80]}...")
@@ -2515,12 +2595,16 @@ def speech_to_text():
 
             os.unlink(temp_path)
 
-            return jsonify({
+            response = {
                 'transcript': transcript,
                 'language': detected_lang,
                 'confidence': confidence,
                 'model': model_name
-            })
+            }
+            if numeral_uncertain:
+                response['numeral_uncertain'] = True
+                print("   ⚠️ Digit(s) found in raw Punjabi ASR transcript - flagging numeral_uncertain")
+            return jsonify(response)
             
         except Exception as inner_error:
             print(f"❌ Transcription error: {str(inner_error)}")

@@ -26,10 +26,11 @@ const SILENT_WAV_BYTES = new Uint8Array([
 ]);
 
 let sharedAudioElement: HTMLAudioElement | null = null;
+let silentAudioUrl: string | null = null;
 const getSharedAudioElement = (): HTMLAudioElement => {
   if (!sharedAudioElement) {
-    const url = URL.createObjectURL(new Blob([SILENT_WAV_BYTES], {type: 'audio/wav'}));
-    sharedAudioElement = new Audio(url);
+    silentAudioUrl = URL.createObjectURL(new Blob([SILENT_WAV_BYTES], {type: 'audio/wav'}));
+    sharedAudioElement = new Audio(silentAudioUrl);
   }
   return sharedAudioElement;
 };
@@ -48,6 +49,15 @@ class TtsWeb {
   prime(): void {
     try {
       const el = getSharedAudioElement();
+      // el.src may still point at the LAST real TTS clip (speakViaBackend
+      // overwrites it for playback and never resets it back). Per spec,
+      // calling .play() on a clip that already reached 'ended' seeks back
+      // to position 0 and replays it - without this reset, pressing the mic
+      // button again after a translation audibly restates it instead of
+      // just silently unlocking the element.
+      if (silentAudioUrl && el.src !== silentAudioUrl) {
+        el.src = silentAudioUrl;
+      }
       el.play().catch(() => {
         // Best-effort - worst case, real playback later falls back to
         // whatever the browser's autoplay policy allows anyway.
