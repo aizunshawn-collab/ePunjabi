@@ -617,8 +617,6 @@ interface UiStrings {
   detectingLanguage: string;
   translationErrorTitle: string;
   translationErrorMessage: string;
-  speakingPunjabi: string;
-  punjabiComplete: string;
   micPermissionTitle: string;
   micPermissionMessage: string;
   askLater: string;
@@ -656,6 +654,7 @@ interface UiStrings {
   feature5: string;
   translating: (src: string, tgt: string) => string;
   speaking: (tgt: string) => string;
+  translationCompleteMsg: (tgt: string) => string;
   speechError: (msg: string) => string;
   translationFailed: (err: string) => string;
   ttsFailed: (err: string) => string;
@@ -723,8 +722,6 @@ const UI_STRINGS: Record<UiLang, UiStrings> = {
     detectingLanguage: 'Detecting language...',
     translationErrorTitle: 'Translation Error',
     translationErrorMessage: 'Failed to translate. Please try again.',
-    speakingPunjabi: 'Speaking Punjabi...',
-    punjabiComplete: 'Punjabi translation complete!',
     micPermissionTitle: 'Microphone Permission',
     micPermissionMessage: 'This app needs access to your microphone for voice translation',
     askLater: 'Ask Me Later',
@@ -765,6 +762,7 @@ const UI_STRINGS: Record<UiLang, UiStrings> = {
     feature5: 'Secure Google Cloud integration',
     translating: (src, tgt) => `Translating ${src} → ${tgt}...`,
     speaking: tgt => `Speaking ${tgt}...`,
+    translationCompleteMsg: tgt => `${tgt} translation complete!`,
     speechError: msg => `Error: ${msg}`,
     translationFailed: err => `Translation failed: ${err}`,
     ttsFailed: err => `TTS failed: ${err}`,
@@ -830,8 +828,6 @@ const UI_STRINGS: Record<UiLang, UiStrings> = {
     detectingLanguage: 'ਭਾਸ਼ਾ ਦੀ ਪਛਾਣ ਹੋ ਰਹੀ ਹੈ...',
     translationErrorTitle: 'ਅਨੁਵਾਦ ਗਲਤੀ',
     translationErrorMessage: 'ਅਨੁਵਾਦ ਕਰਨ ਵਿੱਚ ਅਸਫਲ। ਕਿਰਪਾ ਕਰਕੇ ਦੁਬਾਰਾ ਕੋਸ਼ਿਸ਼ ਕਰੋ।',
-    speakingPunjabi: 'ਪੰਜਾਬੀ ਬੋਲ ਰਿਹਾ ਹੈ...',
-    punjabiComplete: 'ਪੰਜਾਬੀ ਅਨੁਵਾਦ ਪੂਰਾ ਹੋ ਗਿਆ!',
     micPermissionTitle: 'ਮਾਈਕ੍ਰੋਫ਼ੋਨ ਦੀ ਇਜਾਜ਼ਤ',
     micPermissionMessage: 'ਇਸ ਐਪ ਨੂੰ ਵੌਇਸ ਅਨੁਵਾਦ ਲਈ ਤੁਹਾਡੇ ਮਾਈਕ੍ਰੋਫ਼ੋਨ ਦੀ ਲੋੜ ਹੈ',
     askLater: 'ਬਾਅਦ ਵਿੱਚ ਪੁੱਛੋ',
@@ -872,6 +868,7 @@ const UI_STRINGS: Record<UiLang, UiStrings> = {
     feature5: 'ਸੁਰੱਖਿਅਤ ਗੂਗਲ ਕਲਾਉਡ ਏਕੀਕਰਨ',
     translating: (src, tgt) => `${src} ਤੋਂ ${tgt} ਵਿੱਚ ਅਨੁਵਾਦ ਹੋ ਰਿਹਾ ਹੈ...`,
     speaking: tgt => `${tgt} ਬੋਲ ਰਿਹਾ ਹੈ...`,
+    translationCompleteMsg: tgt => `${tgt} ਅਨੁਵਾਦ ਪੂਰਾ ਹੋ ਗਿਆ!`,
     speechError: msg => `ਗਲਤੀ: ${msg}`,
     translationFailed: err => `ਅਨੁਵਾਦ ਅਸਫਲ: ${err}`,
     ttsFailed: err => `TTS ਅਸਫਲ: ${err}`,
@@ -995,6 +992,12 @@ const TranslationAppMobile = (): JSX.Element => {
   const [documentLocalPath, setDocumentLocalPath] = useState<string | null>(null);
   const [isDarkMode, setIsDarkMode] = useState(false);
   const uiLanguageRef = useRef<UiLang>('en');
+  // Tracks the current translation's target language so the tts-start/
+  // tts-finish listeners below (registered once on mount) can report the
+  // correct language instead of always assuming Punjabi - translation is
+  // bidirectional (auto-detected English<->Punjabi), not English-to-Punjabi
+  // only.
+  const outputLanguageRef = useRef<'en' | 'pa'>('pa');
   // Bumped at the start of every translateAndSpeak() call - lets the
   // fire-and-forget background confidence check (which can resolve well
   // after the user has moved on to a new translation) confirm it's still
@@ -1092,8 +1095,14 @@ const TranslationAppMobile = (): JSX.Element => {
     Tts.setDefaultLanguage('pa-IN').catch(() => {
       // Falls back to the device default if pa-IN voice data isn't installed
     });
-    Tts.addEventListener('tts-start', () => setStatus(UI_STRINGS[uiLanguageRef.current].speakingPunjabi));
-    Tts.addEventListener('tts-finish', () => setStatus(UI_STRINGS[uiLanguageRef.current].punjabiComplete));
+    Tts.addEventListener('tts-start', () => {
+      const strings = UI_STRINGS[uiLanguageRef.current];
+      setStatus(strings.speaking(LANGUAGE_NAME_MAP[uiLanguageRef.current][outputLanguageRef.current]));
+    });
+    Tts.addEventListener('tts-finish', () => {
+      const strings = UI_STRINGS[uiLanguageRef.current];
+      setStatus(strings.translationCompleteMsg(LANGUAGE_NAME_MAP[uiLanguageRef.current][outputLanguageRef.current]));
+    });
     Tts.addEventListener('tts-cancel', () => setStatus(UI_STRINGS[uiLanguageRef.current].ready));
     // TEMP DIAGNOSTIC: log all installed voices so we can see which Punjabi
     // voice variants are available on this device/emulator.
@@ -1615,6 +1624,7 @@ const TranslationAppMobile = (): JSX.Element => {
       const targetLang = sourceLang === 'pa' ? 'en' : 'pa';
       setInputLanguage(sourceLang);
       setOutputLanguage(targetLang);
+      outputLanguageRef.current = targetLang;
 
       setStatus(T.translating(LANGUAGE_NAMES[sourceLang], LANGUAGE_NAMES[targetLang]));
 
@@ -1694,10 +1704,12 @@ const TranslationAppMobile = (): JSX.Element => {
     // - keeps speech output identical across platforms. Falls back to the
     // native engine below if the backend is unreachable.
     if (Platform.OS !== 'web' && languageCode === 'pa') {
-      setStatus(UI_STRINGS[uiLanguageRef.current].speakingPunjabi);
+      const strings = UI_STRINGS[uiLanguageRef.current];
+      const langName = LANGUAGE_NAME_MAP[uiLanguageRef.current][languageCode];
+      setStatus(strings.speaking(langName));
       const played = await speakPunjabiViaBackend(text);
       if (played) {
-        setStatus(UI_STRINGS[uiLanguageRef.current].punjabiComplete);
+        setStatus(strings.translationCompleteMsg(langName));
         return;
       }
     }
