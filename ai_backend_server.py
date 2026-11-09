@@ -1963,6 +1963,22 @@ PA_HI_UR_MIN_PROB = 0.1
 ENGLISH_AUTO_CONFIRM_MIN_CONFIDENCE = 0.6
 
 _pa_hi_ur_class_indices = None  # populated on first use, see _get_pa_hi_ur_indices
+_en_class_index = None  # populated on first use, see _get_en_index
+
+# Live evidence 2026-11-08/09 (web, Safari, auto mode - see repo memory):
+# genuinely English clips ('Hi, how's it going?', 'hey guys heavy driving
+# there') top-1'd as 'pt'/'am' (unrelated languages, same failure mode the
+# 2026-11-06 fix targeted for Punjabi) with pa/hi/ur_prob effectively zero
+# (0.000-0.001) - i.e. NOT misrouted because something looked Punjabi, but
+# because requiring an exact top-1 'en' match (see is_english_like below) is
+# too strict in exactly the same way requiring top-1 'pa'/'hi'/'ur' used to
+# be. Reading 'en's own posterior the same way PA_HI_UR_MIN_PROB already
+# reads pa/hi/ur's fixes this symmetrically without weakening the original
+# Punjabi fix: it only overrides to 'en' when 'en' clearly dominates
+# pa/hi/ur's own (tiny) probability for that window, so a genuine Punjabi
+# clip whose en_prob is - like its pa_hi_ur_prob - also just noise stays 'pa'.
+EN_MIN_PROB = 0.05
+EN_PA_HI_UR_MARGIN_RATIO = 3.0
 
 
 def _get_pa_hi_ur_indices(model):
@@ -1977,6 +1993,17 @@ def _get_pa_hi_ur_indices(model):
             if lab.split(':')[0].strip().lower() in ('pa', 'hi', 'ur')
         ]
     return _pa_hi_ur_class_indices
+
+
+def _get_en_index(model):
+    """Class index for English in the loaded LID model's label set - see
+    _get_pa_hi_ur_indices above, same idea applied to 'en'."""
+    global _en_class_index
+    if _en_class_index is None:
+        ind2lab = model.hparams.label_encoder.ind2lab
+        matches = [i for i, lab in ind2lab.items() if lab.split(':')[0].strip().lower() == 'en']
+        _en_class_index = matches[0] if matches else None
+    return _en_class_index
 
 
 def detect_spoken_language(audio_array, sample_rate=16000):
@@ -2009,17 +2036,24 @@ def detect_spoken_language(audio_array, sample_rate=16000):
     from being silently misrouted to the English-only ASR model while still
     reflecting the project's deliberate asymmetric bias (false 'pa' is far
     cheaper than false 'en').
+    Positively naming 'en' is judged the same two ways as pa/hi/ur above (see
+    EN_MIN_PROB) - requiring an exact top-1 'en' match reintroduced the exact
+    same failure mode in the other direction (confirmed live 2026-11-08/09:
+    genuine English clips top-1'd as 'pt'/'am' with near-zero pa/hi/ur_prob,
+    so they still fell through to 'pa' by default).
     Returns (lang, iso_code, confidence) - iso_code/confidence are the
     highest-confidence window's top-1 values, for logging only; the actual
     `lang` decision follows the rules above, not just the top window."""
     model = get_language_id_model()
     pa_hi_ur_idx = _get_pa_hi_ur_indices(model)
+    en_idx = _get_en_index(model)
     window_len = int(LID_WINDOW_SECONDS * sample_rate)
     windows = [audio_array[i:i + window_len] for i in range(0, len(audio_array), window_len)]
     windows = [w for w in windows if len(w) >= sample_rate] or [audio_array]
 
     results = []
     pa_like = False
+    en_like = False
     for w in windows:
         audio_tensor = torch.from_numpy(w).unsqueeze(0)
         out_prob, log_likelihood, _, text_lab = model.classify_batch(audio_tensor)
@@ -2027,14 +2061,16 @@ def detect_spoken_language(audio_array, sample_rate=16000):
         confidence = float(log_likelihood.exp()[0])
         results.append((iso_code, confidence))
 
-        if pa_hi_ur_idx:
-            pa_hi_ur_prob = float(out_prob.exp()[0][pa_hi_ur_idx].max())
-            print(f"   🩺 LID window: top={iso_code} ({confidence:.2f}), pa/hi/ur_prob={pa_hi_ur_prob:.3f}")
-            if pa_hi_ur_prob >= PA_HI_UR_MIN_PROB:
-                pa_like = True
+        pa_hi_ur_prob = float(out_prob.exp()[0][pa_hi_ur_idx].max()) if pa_hi_ur_idx else 0.0
+        en_prob = float(out_prob.exp()[0][en_idx]) if en_idx is not None else 0.0
+        print(f"   🩺 LID window: top={iso_code} ({confidence:.2f}), pa/hi/ur_prob={pa_hi_ur_prob:.3f}, en_prob={en_prob:.3f}")
+        if pa_hi_ur_prob >= PA_HI_UR_MIN_PROB:
+            pa_like = True
+        if en_prob >= EN_MIN_PROB and en_prob >= EN_PA_HI_UR_MARGIN_RATIO * pa_hi_ur_prob:
+            en_like = True
 
     is_punjabi_like = pa_like or any(iso in ('pa', 'hi', 'ur') for iso, _ in results)
-    is_english_like = any(iso == 'en' for iso, _ in results)
+    is_english_like = en_like or any(iso == 'en' for iso, _ in results)
     lang = 'en' if is_english_like and not is_punjabi_like else 'pa'
     top_iso, top_confidence = max(results, key=lambda r: r[1])
     return lang, top_iso, top_confidence
