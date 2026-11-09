@@ -49,7 +49,14 @@ export default class AudioRecorderPlayerWeb {
         this.chunks.push(event.data);
       }
     };
-    this.mediaRecorder.start();
+    // Safari/WebKit's MediaRecorder only writes correct duration/header
+    // metadata (and reliably captures from the very start of the
+    // recording) when given a timeslice - calling start() with no
+    // argument is a known WebKit bug that can truncate/garble the
+    // beginning of the clip (reported 2026-11-08: "hi how's it going?" on
+    // Safari came back as garbled, misdetected-as-Punjabi text). Chrome/
+    // Firefox handle both forms fine, so this is safe everywhere.
+    this.mediaRecorder.start(250);
     return path;
   }
 
