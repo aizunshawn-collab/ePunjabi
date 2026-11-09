@@ -14,7 +14,24 @@ export default class AudioRecorderPlayerWeb {
   async startRecorder(path: string): Promise<string> {
     this.currentPath = path;
     this.chunks = [];
-    this.stream = await navigator.mediaDevices.getUserMedia({audio: true});
+    // Android's native recorder (the other platform this app ships on) just
+    // captures the raw mic signal - no adaptive DSP. A bare `{audio: true}`
+    // here instead lets the browser apply its own default echo
+    // cancellation/noise suppression/auto gain control, which are
+    // session- and ambient-noise-dependent (NOT deterministic run to run)
+    // and measurably change loudness/timbre - this is a strong candidate for
+    // why the SAME backend language-ID model is "perfect" on Android but
+    // inconsistent on web (reported 2026-11-08): it isn't seeing a
+    // consistent signal to begin with. Explicitly disabling all three asks
+    // the browser for the closest thing to Android's raw-mic behavior.
+    this.stream = await navigator.mediaDevices.getUserMedia({
+      audio: {
+        channelCount: 1,
+        echoCancellation: false,
+        noiseSuppression: false,
+        autoGainControl: false,
+      },
+    });
     // Safari/WebKit (desktop and iOS) doesn't support 'audio/webm' at all -
     // MediaRecorder's constructor throws synchronously for an unsupported
     // mimeType, which previously made startRecorder() throw on every
