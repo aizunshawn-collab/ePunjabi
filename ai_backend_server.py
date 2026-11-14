@@ -22,6 +22,22 @@ python ai_backend_server.py
 Then update your app to use http://localhost:5000 instead of Google APIs
 """
 
+import os
+# Set before any native-threaded library (ctranslate2's BLAS backend, torch)
+# is imported below - both default to using ALL available vCPUs for their own
+# thread pool, and running them in the same process (translation + speech
+# auto-detect/Punjabi ASR) means their pools oversubscribe the 4 vCPUs this
+# server has, each fighting the other for CPU via constant context-switching
+# - confirmed live 2026-11-14: /translate calls that are normally a few
+# hundred ms took 28-75 SECONDS instead, right in the middle of a session
+# also doing speech-to-text (torch/NeMo/SpeechBrain) calls. Capping both to a
+# fair half of the 4 vCPUs each (see also torch.set_num_threads() below and
+# intra_threads= on both ctranslate2.Translator() calls) stops the
+# oversubscription without starving either one down to a single thread.
+os.environ.setdefault('OMP_NUM_THREADS', '2')
+os.environ.setdefault('MKL_NUM_THREADS', '2')
+os.environ.setdefault('NUMEXPR_NUM_THREADS', '2')
+
 from flask import Flask, request, jsonify, g
 from flask_cors import CORS
 import ctranslate2
@@ -32,6 +48,10 @@ import sentencepiece as spm
 # recordings), which every ASR path below relies on.
 from faster_whisper.audio import decode_audio
 import torch  # only used directly for the SpeechBrain language-ID model below; NeMo RNNT (indicconformer_nemo_asr.py) uses it internally too
+# See the OMP_NUM_THREADS/MKL_NUM_THREADS comment above - same oversubscription
+# fix, torch's own API for it (env vars alone don't reliably cap torch's
+# intra-op thread pool once it's already imported elsewhere).
+torch.set_num_threads(2)
 from indictrans_processor import IndicProcessor  # local port, see file docstring
 from punjabi_numerals import convert_number_words_to_digits, detect_unreliable_numeral  # pa-source numeral-word-to-digit fix + ASR digit-corruption flag, see file docstring
 from english_numerals import convert_number_words_to_digits as convert_english_number_words_to_digits  # Parakeet en-source numeral-word-to-digit fix, see file docstring
@@ -214,11 +234,11 @@ EN_INDIC_CT2_DIR = os.path.join(os.path.dirname(__file__), 'models', 'indictrans
 INDIC_EN_CT2_DIR = os.path.join(os.path.dirname(__file__), 'models', 'indictrans2-indic-en-ct2-int8')
 
 try:
-    en_indic_translator = ctranslate2.Translator(EN_INDIC_CT2_DIR, device=device)
+    en_indic_translator = ctranslate2.Translator(EN_INDIC_CT2_DIR, device=device, intra_threads=2)
     en_indic_sp_src = spm.SentencePieceProcessor(model_file=os.path.join(EN_INDIC_CT2_DIR, "vocab", "model.SRC"))
     en_indic_sp_tgt = spm.SentencePieceProcessor(model_file=os.path.join(EN_INDIC_CT2_DIR, "vocab", "model.TGT"))
 
-    indic_en_translator = ctranslate2.Translator(INDIC_EN_CT2_DIR, device=device)
+    indic_en_translator = ctranslate2.Translator(INDIC_EN_CT2_DIR, device=device, intra_threads=2)
     indic_en_sp_src = spm.SentencePieceProcessor(model_file=os.path.join(INDIC_EN_CT2_DIR, "vocab", "model.SRC"))
     indic_en_sp_tgt = spm.SentencePieceProcessor(model_file=os.path.join(INDIC_EN_CT2_DIR, "vocab", "model.TGT"))
 
