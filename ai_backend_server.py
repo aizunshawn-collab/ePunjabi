@@ -342,6 +342,33 @@ def _hard_split_by_words(sentence, max_words=MAX_CHUNK_WORDS):
     return [" ".join(words[i:i + max_words]) for i in range(0, len(words), max_words)]
 
 
+# BUG FOUND 2026-11-22 (user: pa->en "sometimes only translates half of what
+# you say and ignores the rest"): _restore_punjabi_breaks above only splits
+# at a finite-verb/auxiliary word from a curated list (_PA_SENTENCE_FINAL) -
+# real speech ending a clause in a verb form/tense not in that list gets NO
+# break at all, so the piece can stay a multi-sentence run-on well past the
+# lengths already proven (2026-10-18 bug note above) to make IndicTrans2
+# silently drop content (measured: 18% of sentences largely missing at 2
+# merged sentences/run-on, 33% at 5). This hard-caps any Gurmukhi-heavy piece
+# that the linguistic split left long, bounding that worst-case exposure
+# without touching pieces the smarter split already shortened.
+_PA_RUNON_SAFE_MAX_WORDS = 25
+
+
+def _cap_pa_runon_length(piece):
+    """Hard-split a Gurmukhi-heavy piece that's still long after
+    _restore_punjabi_breaks found no usable break point - see bug note
+    above. No-op for short pieces or pieces that aren't mostly Gurmukhi
+    (e.g. an embedded English clause, which IndicTrans2 handles fine)."""
+    words = piece.split()
+    if len(words) <= _PA_RUNON_SAFE_MAX_WORDS:
+        return [piece]
+    letters = [c for c in piece if c.isalpha()]
+    if not letters or sum(1 for c in letters if '\u0A00' <= c <= '\u0A7F') / len(letters) < 0.6:
+        return [piece]
+    return _hard_split_by_words(piece, max_words=_PA_RUNON_SAFE_MAX_WORDS)
+
+
 def _split_long_sentence(sentence):
     """Break an overly long/complex sentence into smaller clauses, falling
     back to a hard word-count split (see comment above) when no clause/comma
@@ -373,7 +400,8 @@ def chunk_text(text):
         if not sentence.strip():
             continue
         for piece in _restore_punjabi_breaks(sentence):
-            chunks.extend(_split_long_sentence(piece))
+            for capped_piece in _cap_pa_runon_length(piece):
+                chunks.extend(_split_long_sentence(capped_piece))
     return [c.strip() for c in chunks if c.strip()]
 
 
@@ -2000,6 +2028,27 @@ _en_class_index = None  # populated on first use, see _get_en_index
 EN_MIN_PROB = 0.05
 EN_PA_HI_UR_MARGIN_RATIO = 3.0
 
+# BUG FOUND 2026-11-22 (user: "apps are still mistaking the user for speaking
+# punjabi when they are really speaking english, this is with smartdetection
+# turned on"): the per-window top-1-label-match fallbacks below (the "OR the
+# single top-ranked class" half of "Looks like is judged two ways", see
+# detect_spoken_language's docstring) had NO confidence floor at all - a
+# window's top-1 guess only has to equal 'pa'/'hi'/'ur' or 'en' as a bare
+# string, no matter how close to the ~1/107 (~0.0093) uniform-chance floor
+# across VoxLingua107's 107 classes that guess actually is. Across multiple
+# 3-second windows in one clip (see LID_WINDOW_SECONDS), the more windows a
+# clip has, the higher the chance pure noise lands at least one window's
+# top-1 on 'pa'/'hi'/'ur' - and since is_punjabi_like is an unconditional
+# veto over is_english_like (lang='pa' unless is_english_like AND NOT
+# is_punjabi_like), a single noise-driven window is enough to flip an
+# entire, otherwise clearly English, clip to 'pa'. Documented genuine misses
+# (both directions, see notes above) all sat at 0.15-0.59 confidence, well
+# clear of uniform chance - so requiring a modest floor here (well below
+# PA_HI_UR_MIN_PROB/EN_MIN_PROB, which would make this redundant with the
+# probability-based checks) should filter out near-random top-1 noise without
+# weakening real, if weak, language evidence.
+LID_TOP1_MIN_CONFIDENCE = 0.03
+
 
 def _get_pa_hi_ur_indices(model):
     """Class indices for Punjabi/Hindi/Urdu in the loaded LID model's label
@@ -2089,8 +2138,12 @@ def detect_spoken_language(audio_array, sample_rate=16000):
         if en_prob >= EN_MIN_PROB and en_prob >= EN_PA_HI_UR_MARGIN_RATIO * pa_hi_ur_prob:
             en_like = True
 
-    is_punjabi_like = pa_like or any(iso in ('pa', 'hi', 'ur') for iso, _ in results)
-    is_english_like = en_like or any(iso == 'en' for iso, _ in results)
+    is_punjabi_like = pa_like or any(
+        iso in ('pa', 'hi', 'ur') and conf >= LID_TOP1_MIN_CONFIDENCE for iso, conf in results
+    )
+    is_english_like = en_like or any(
+        iso == 'en' and conf >= LID_TOP1_MIN_CONFIDENCE for iso, conf in results
+    )
     lang = 'en' if is_english_like and not is_punjabi_like else 'pa'
     top_iso, top_confidence = max(results, key=lambda r: r[1])
     return lang, top_iso, top_confidence
@@ -2500,8 +2553,21 @@ def confidence():
 
     Request body: {"text", "source_lang", "target_lang", "translation", "gender"}
     Response: {"confidence": 0.0-1.0 or null, "translation"?, "retried"?}
-    ("translation"/"retried" are only present if ensemble retry found and
-    used a better candidate than the one passed in.)
+    ("translation"/"retried" are only present if ensemble retry and/or the
+    Google Translate fallback below found a better candidate than the one
+    passed in.)
+
+    BUG FOUND 2026-11-22 (user: pa->en "forms english sentences that are
+    clearly unnatural... maybe we can integrate a smart ai system to look
+    over that"): /translate's `verify=true` path already scores the Google
+    Translate fallback (see google_translate_fallback.py, configured in
+    production via GOOGLE_TRANSLATE_API_KEY) against this same round-trip
+    metric and swaps it in when it scores higher - but the mobile app
+    disabled verify=true for latency (see /translate's docstring) and calls
+    THIS endpoint for its background quality check instead, which never had
+    that same fallback. Added below, so the one "smart AI system" this
+    project already has wired up actually gets a chance to run on the code
+    path real users hit.
     """
     try:
         data = request.json
@@ -2522,6 +2588,23 @@ def confidence():
         if retried:
             response_payload['translation'] = improved_translation
             response_payload['retried'] = True
+
+        # See docstring above - same fallback /translate's verify=true path
+        # uses, scored with the same round-trip-confidence metric, only
+        # swapped in when it beats whatever ensemble retry already produced.
+        if score is not None and google_translate_fallback.is_configured():
+            google_translation = google_translate_fallback.translate_via_google(text, source_lang, target_lang)
+            if google_translation:
+                google_confidence, _google_back = compute_roundtrip_confidence(
+                    text, source_lang, target_lang, google_translation
+                )
+                compare_against = response_payload['confidence']
+                if google_confidence is not None and (compare_against is None or google_confidence > compare_against):
+                    print(f"   ✅ Google Translate fallback scored higher ({google_confidence} > {compare_against}) - using it")
+                    response_payload['translation'] = google_translation
+                    response_payload['confidence'] = google_confidence
+                    response_payload['retried'] = True
+                    response_payload['fallback_used'] = 'google_translate'
         return jsonify(response_payload)
     except Exception as e:
         print(f"❌ Confidence check error: {str(e)}")
