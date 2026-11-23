@@ -94,14 +94,31 @@ def correct_grammar(text):
     """Run the GEC pass over `text` (English only). Returns the corrected
     string, or None on any failure/unavailability/no-op - callers must treat
     this as best-effort and keep their existing translation when None comes
-    back."""
+    back.
+
+    LIVE-VERIFIED FAILURE MODE (2026-11-23): on short, single-sentence
+    translations (the normal case for spoken-utterance input), this model
+    consistently APPENDED an entire extra, invented sentence after an
+    otherwise-correct fix (e.g. "she go to school" -> "she goes to school.
+    She went to school." - 3/3 live tests showed this same pattern). Capping
+    `max_new_tokens` relative to the input's own token count (rather than
+    the previous flat 256) makes it much harder for the model to generate a
+    whole unrelated extra clause - this is a generation-time mitigation,
+    complementary to (not a replacement for) the post-hoc
+    _looks_like_hallucinated_addition() safety net in ai_backend_server.py's
+    apply_grammar_correction(), which still rejects anything that slips
+    through.
+    """
     if not text or not text.strip():
         return None
     pipe = _load_pipeline()
     if pipe is None:
         return None
     try:
-        result = pipe(text[:_MAX_INPUT_CHARS], max_length=256, num_beams=2, truncation=True)
+        input_text = text[:_MAX_INPUT_CHARS]
+        input_token_count = len(pipe.tokenizer(input_text)['input_ids'])
+        max_new_tokens = min(200, input_token_count + 12)
+        result = pipe(input_text, max_new_tokens=max_new_tokens, num_beams=2, truncation=True)
         corrected = result[0]['generated_text'].strip()
         return corrected or None
     except Exception as e:
