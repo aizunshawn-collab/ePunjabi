@@ -162,7 +162,7 @@ WORKDIR /app
 COPY --from=builder /opt/venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 
-COPY ai_backend_server.py indictrans_processor.py indicconformer_asr.py indicconformer_nemo_asr.py parakeet_unified_asr.py punjabi_numerals.py english_numerals.py punjabi_name_corrections.py parakeet_name_corrections.py punjabi_alphanumeric_fix.py word_sense_disambiguation.py beam_sensitive_patterns.py google_translate_fallback.py google_tts_fallback.py ocr_processor.py document_translator.py download_models.py supervisord.conf watchdog.sh entrypoint.sh ./
+COPY ai_backend_server.py indictrans_processor.py indicconformer_asr.py indicconformer_nemo_asr.py parakeet_unified_asr.py punjabi_numerals.py english_numerals.py punjabi_name_corrections.py parakeet_name_corrections.py punjabi_alphanumeric_fix.py word_sense_disambiguation.py beam_sensitive_patterns.py google_translate_fallback.py grammar_correction.py google_tts_fallback.py ocr_processor.py document_translator.py download_models.py supervisord.conf watchdog.sh entrypoint.sh ./
 COPY fonts ./fonts
 RUN chmod +x watchdog.sh entrypoint.sh
 
