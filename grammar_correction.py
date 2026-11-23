@@ -41,7 +41,12 @@ exception) is caught and reported as None/False, so a caller can always
 safely keep whatever translation it already had.
 """
 import os
+import re
 import threading
+
+# Matches one "sentence" (text up to and including a run of .!? , or a
+# trailing remainder with no terminal punctuation at all).
+_SENTENCE_RE = re.compile(r'[^.!?]*[.!?]+|[^.!?]+$')
 
 MODEL_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'models', 'grammar-synthesis-small')
 # Guards against a pathologically long single "sentence" blowing up
@@ -90,6 +95,29 @@ def is_available() -> bool:
     return _load_pipeline() is not None
 
 
+def _truncate_to_sentence_count(original, corrected):
+    """LIVE-VERIFIED FINDING (2026-11-23): capping max_new_tokens relative to
+    input length did NOT stop the model from appending an entire extra,
+    invented sentence after a correct fix - all 3 live test cases produced
+    byte-for-byte the same hallucinated addition as the uncapped version
+    (e.g. "she go to school" -> "she goes to school. She went to school."),
+    because the model only needed a handful of extra tokens to do it, well
+    within any reasonable cap.
+
+    This is a second, more direct mitigation: since the whole point of this
+    pass is a 1:1 grammar fix (not adding new information), if the corrected
+    text has MORE sentences than the original, it almost certainly tacked on
+    an invented continuation - keep only the first len(original sentences)
+    sentences of the correction.
+    """
+    orig_sentences = [s for s in _SENTENCE_RE.findall(original) if s.strip()]
+    corr_sentences = [s for s in _SENTENCE_RE.findall(corrected) if s.strip()]
+    if not orig_sentences or len(corr_sentences) <= len(orig_sentences):
+        return corrected
+    truncated = ''.join(corr_sentences[:len(orig_sentences)]).strip()
+    return truncated or corrected
+
+
 def correct_grammar(text):
     """Run the GEC pass over `text` (English only). Returns the corrected
     string, or None on any failure/unavailability/no-op - callers must treat
@@ -120,6 +148,9 @@ def correct_grammar(text):
         max_new_tokens = min(200, input_token_count + 12)
         result = pipe(input_text, max_new_tokens=max_new_tokens, num_beams=2, truncation=True)
         corrected = result[0]['generated_text'].strip()
+        if not corrected:
+            return None
+        corrected = _truncate_to_sentence_count(input_text, corrected)
         return corrected or None
     except Exception as e:
         print(f"   ⚠️ Grammar correction failed: {e}")
