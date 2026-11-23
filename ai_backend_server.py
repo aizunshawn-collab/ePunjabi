@@ -63,6 +63,7 @@ from punjabi_alphanumeric_fix import fix_alphanumeric_codes  # en->pa digit-anch
 from indicconformer_asr import IndicConformerASR  # torch-free ONNX Punjabi ASR, see file docstring
 from parakeet_unified_asr import ParakeetUnifiedASR  # torch-free ONNX English ASR (RNNT), see file docstring
 import google_translate_fallback  # optional, opt-in Google Translate fallback for /translate's verify path, see file docstring
+import grammar_correction  # dedicated English GEC model (fluency, not just meaning-preservation), see file docstring
 import google_tts_fallback  # optional, opt-in Google Cloud TTS fallback for the web build's /tts route, see file docstring
 import pytesseract
 from ocr_processor import TESSERACT_LANG_MAP, ocr_with_confidence  # torch-free Tesseract OCR wrapper, see file docstring
@@ -1827,6 +1828,52 @@ def verify_and_improve_translation(text, source_lang, target_lang, chunks, trans
     return translation, confidence, back_translation, retried
 
 
+# Tolerance for apply_grammar_correction()'s safety-net check below: a
+# meaning-preserving rewording can still shift the back-translation's word
+# overlap score by a little even when nothing is actually wrong (same
+# reasoning as _ENSEMBLE_GOOD_ENOUGH_THRESHOLD's margin elsewhere in this
+# file) - only reject a correction that regresses confidence by MORE than
+# this, which is a much stronger signal of an actual meaning-altering
+# rewrite rather than ordinary fluency polishing.
+_GRAMMAR_CORRECTION_TOLERANCE = 0.05
+
+
+def apply_grammar_correction(text, source_lang, target_lang, translation, confidence):
+    """Dedicated GEC polishing pass (see grammar_correction.py) for English
+    output - run AFTER verify_and_improve_translation()/the Google Translate
+    fallback have already picked the "best" candidate by meaning-
+    preservation, since this targets a DIFFERENT axis (fluency/
+    grammaticality) that round-trip confidence doesn't measure at all (see
+    grammar_correction.py's docstring for why the Google fallback alone
+    didn't fix the "unnatural phrasing" complaint - user confirmed "nothing
+    changed" after testing it).
+
+    Safety-netted rather than confidence-gated: the model is purpose-built to
+    preserve the meaning of already-correct text, so this runs
+    unconditionally for target_lang == 'en' (every pa->en request), and a
+    correction is only REJECTED if it clearly regresses round-trip
+    confidence by more than _GRAMMAR_CORRECTION_TOLERANCE - guarding against
+    the rare hallucinated rewrite without gating the common case the way the
+    Google fallback's threshold-based swap did.
+
+    Returns (translation, confidence, corrected: bool) - `corrected` is True
+    only when the returned translation/confidence differ from the inputs.
+    """
+    if target_lang != 'en' or not grammar_correction.is_available():
+        return translation, confidence, False
+    corrected = grammar_correction.correct_grammar(translation)
+    if not corrected or corrected == translation:
+        return translation, confidence, False
+    corrected_confidence, _back = compute_roundtrip_confidence(text, source_lang, target_lang, corrected)
+    if confidence is not None and corrected_confidence is not None and (
+        corrected_confidence < confidence - _GRAMMAR_CORRECTION_TOLERANCE
+    ):
+        print(f"   ⚠️ Grammar correction rejected (confidence {corrected_confidence} < baseline {confidence} - tolerance): keeping {translation!r}")
+        return translation, confidence, False
+    print(f"   ✅ Grammar correction applied: {translation!r} → {corrected!r}")
+    return corrected, (corrected_confidence if corrected_confidence is not None else confidence), True
+
+
 
 # Parakeet-unified-en-0.6b (RNNT, ONNX int8, torch-free) - the default (and
 # only) English ASR since Whisper was removed entirely (2026-10, see repo
@@ -2526,6 +2573,21 @@ def translate_text():
                         response_payload['back_translation'] = google_back_translation
                         response_payload['fallback_used'] = 'google_translate'
                         response_payload['indictrans2_confidence'] = confidence
+                        confidence = google_confidence
+
+            # Dedicated grammar/fluency correction pass - see
+            # apply_grammar_correction()'s docstring for why this is a
+            # separate, necessary step from the Google fallback above (that
+            # fallback is gated on meaning-preservation, not fluency, so it
+            # didn't fix the "unnatural phrasing" complaint it was meant to).
+            corrected_translation, corrected_confidence, grammar_corrected = apply_grammar_correction(
+                text, source_lang, target_lang, response_payload['translation'], confidence
+            )
+            if grammar_corrected:
+                response_payload['translation'] = corrected_translation
+                response_payload['confidence'] = corrected_confidence
+                response_payload['retried'] = True
+                response_payload['grammar_corrected'] = True
 
         return jsonify(response_payload)
         
@@ -2568,6 +2630,14 @@ def confidence():
     that same fallback. Added below, so the one "smart AI system" this
     project already has wired up actually gets a chance to run on the code
     path real users hit.
+
+    FOLLOW-UP (same day, after user retested): the Google fallback above
+    made no visible difference for "unnatural phrasing", because
+    compute_roundtrip_confidence measures MEANING preservation, not
+    fluency - a literal-but-awkward translation scores fine on that metric
+    and the fallback never engages. Added a genuinely fluency-focused,
+    dedicated grammar-correction pass below (see grammar_correction.py and
+    apply_grammar_correction()) to actually address this.
     """
     try:
         data = request.json
@@ -2605,6 +2675,24 @@ def confidence():
                     response_payload['confidence'] = google_confidence
                     response_payload['retried'] = True
                     response_payload['fallback_used'] = 'google_translate'
+
+        # Dedicated grammar/fluency correction pass - see
+        # apply_grammar_correction()'s docstring for why this is a separate,
+        # necessary step from the Google fallback above (user confirmed
+        # "nothing changed" after testing that fallback for the "unnatural
+        # phrasing" complaint - it's gated on meaning-preservation, not
+        # fluency, so it rarely engaged for this specific issue).
+        corrected_translation, corrected_confidence, grammar_corrected = apply_grammar_correction(
+            text, source_lang, target_lang,
+            response_payload.get('translation', improved_translation),
+            response_payload['confidence'],
+        )
+        if grammar_corrected:
+            response_payload['translation'] = corrected_translation
+            response_payload['confidence'] = corrected_confidence
+            response_payload['retried'] = True
+            response_payload['grammar_corrected'] = True
+
         return jsonify(response_payload)
     except Exception as e:
         print(f"❌ Confidence check error: {str(e)}")
