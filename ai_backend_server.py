@@ -1837,6 +1837,37 @@ def verify_and_improve_translation(text, source_lang, target_lang, chunks, trans
 # rewrite rather than ordinary fluency polishing.
 _GRAMMAR_CORRECTION_TOLERANCE = 0.05
 
+# LIVE-VERIFIED FAILURE MODE (2026-11-23): on a short, already-correct
+# translation ("I am going home."), pszemraj/grammar-synthesis-small
+# returned "I am going home. I am doing well." - an entire HALLUCINATED
+# extra sentence with no basis in the source text at all - and
+# compute_roundtrip_confidence still scored it at/above the original
+# (the invented sentence's words didn't hurt the F1 overlap enough to
+# trip the tolerance check above, since the original content was still
+# fully present). Round-trip confidence alone is NOT a reliable guard
+# against this specific failure mode, so two cheap, targeted additional
+# guards reject a correction that looks like it invented new content
+# rather than fixed grammar in place: legitimate grammar fixes basically
+# never need to add a whole new clause/sentence, so a correction that
+# grows substantially in length or sentence count is rejected outright,
+# before even looking at round-trip confidence.
+_GRAMMAR_MAX_LENGTH_GROWTH_RATIO = 1.2
+_GRAMMAR_MAX_LENGTH_GROWTH_SLACK = 2
+_SENTENCE_SPLIT_RE = re.compile(r'[.!?]+')
+
+
+def _looks_like_hallucinated_addition(original, corrected):
+    """True if `corrected` appears to have invented new content (an extra
+    clause/sentence) rather than just fixed grammar in place - see the
+    live-verified failure mode documented above."""
+    original_words = original.split()
+    corrected_words = corrected.split()
+    if len(corrected_words) > len(original_words) * _GRAMMAR_MAX_LENGTH_GROWTH_RATIO + _GRAMMAR_MAX_LENGTH_GROWTH_SLACK:
+        return True
+    original_sentences = [s for s in _SENTENCE_SPLIT_RE.split(original) if s.strip()]
+    corrected_sentences = [s for s in _SENTENCE_SPLIT_RE.split(corrected) if s.strip()]
+    return len(corrected_sentences) > len(original_sentences)
+
 
 def apply_grammar_correction(text, source_lang, target_lang, translation, confidence):
     """Dedicated GEC polishing pass (see grammar_correction.py) for English
@@ -1850,11 +1881,12 @@ def apply_grammar_correction(text, source_lang, target_lang, translation, confid
 
     Safety-netted rather than confidence-gated: the model is purpose-built to
     preserve the meaning of already-correct text, so this runs
-    unconditionally for target_lang == 'en' (every pa->en request), and a
-    correction is only REJECTED if it clearly regresses round-trip
+    unconditionally for target_lang == 'en' (every pa->en request). A
+    correction is REJECTED if it looks like a hallucinated addition (see
+    _looks_like_hallucinated_addition) or if it clearly regresses round-trip
     confidence by more than _GRAMMAR_CORRECTION_TOLERANCE - guarding against
-    the rare hallucinated rewrite without gating the common case the way the
-    Google fallback's threshold-based swap did.
+    both observed failure modes without gating the common, intended case the
+    way the Google fallback's pure threshold-based swap did.
 
     Returns (translation, confidence, corrected: bool) - `corrected` is True
     only when the returned translation/confidence differ from the inputs.
@@ -1864,6 +1896,9 @@ def apply_grammar_correction(text, source_lang, target_lang, translation, confid
     corrected = grammar_correction.correct_grammar(translation)
     if not corrected or corrected == translation:
         return translation, confidence, False
+    if _looks_like_hallucinated_addition(translation, corrected):
+        print(f"   ⚠️ Grammar correction rejected (looks like a hallucinated addition, not a grammar fix): keeping {translation!r}, discarding {corrected!r}")
+        return translation, confidence, False
     corrected_confidence, _back = compute_roundtrip_confidence(text, source_lang, target_lang, corrected)
     if confidence is not None and corrected_confidence is not None and (
         corrected_confidence < confidence - _GRAMMAR_CORRECTION_TOLERANCE
@@ -1872,6 +1907,7 @@ def apply_grammar_correction(text, source_lang, target_lang, translation, confid
         return translation, confidence, False
     print(f"   ✅ Grammar correction applied: {translation!r} → {corrected!r}")
     return corrected, (corrected_confidence if corrected_confidence is not None else confidence), True
+
 
 
 
