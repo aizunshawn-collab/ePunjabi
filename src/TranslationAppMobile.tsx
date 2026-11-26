@@ -1322,9 +1322,16 @@ const TranslationAppMobile = (): JSX.Element => {
 
     try {
       recordingModeRef.current = 'backend';
+      // LIVE-CONFIRMED BUG (2026-11-26): the "Listening" cue was shown
+      // BEFORE awaiting startRecorder(), so a user who starts talking as
+      // soon as they see/hear that cue could speak over the native
+      // recorder's own startup latency - confirmed via a real production
+      // transcript that was missing an entire opening sentence recorded
+      // immediately after tapping the mic button. Only cue the user once
+      // the recorder has actually started.
+      await audioRecorderPlayer.startRecorder(VOICE_RECORDING_PATH);
       setIsListening(true);
       setStatus(T.listening);
-      await audioRecorderPlayer.startRecorder(VOICE_RECORDING_PATH);
     } catch (error) {
       console.error('Backend audio recording failed to start, falling back to on-device voice:', error);
       recordingModeRef.current = 'ondevice';
