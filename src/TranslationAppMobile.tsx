@@ -159,9 +159,10 @@ const AI_BACKEND_DETECT_TIMEOUT_MS = 5000;
 // AbortError timeouts - keep this generous.
 const AI_BACKEND_TRANSLATE_TIMEOUT_MS = 150000;
 // /confidence can also trigger the same ensemble re-decoding verify=true
-// does on /translate (see verify_and_improve_translation), so give it the
-// same generous budget - it runs in the background after the fast
-// translation is already shown, so a long wait here doesn't block the UI.
+// does on /translate (see verify_and_improve_translation), plus the Google
+// fallback and Gemma grammar correction, so give it the same generous
+// budget. translateAndSpeak waits on it before showing anything, and falls
+// back to the fast translation if it times out or fails.
 const AI_BACKEND_CONFIDENCE_TIMEOUT_MS = 150000;
 // Whisper large-v3 with beam_size=5/best_of=5 on CPU is considerably slower
 // than a single-pass translation, so this gets a longer budget.
@@ -369,28 +370,29 @@ const translateLocalAI = async (
   };
 };
 
-// Scores an already-displayed translation's round-trip confidence via the
-// /confidence endpoint - meant to be called AFTER the fast single-pass
-// translation is already shown/spoken, so the real-time flow's latency is
-// unaffected. If the score comes back low, the backend also tries ensemble
-// re-decoding in the same request (see verify_and_improve_translation's
-// docstring) and may return a better `translation` - the caller can then
-// silently upgrade what's on screen instead of only warning about it.
-// Returns confidence: null on any failure (network, 500, timeout) so a
-// caller can simply skip showing a warning rather than deal with an error.
-type BackgroundConfidenceResult = {
+// Scores the fast single-pass translation's round-trip confidence via the
+// /confidence endpoint, which may also return a better `translation`
+// (ensemble re-decoding, the Google Translate fallback and, for pa->en, the
+// Gemma grammar-correction pass - see /confidence's docstring).
+// translateAndSpeak awaits this BEFORE showing/speaking anything, so the
+// user only ever sees the final translation (user request 2026-11-27: the
+// old fire-and-forget version swapped in a second translation well after
+// the first was shown, which read as a translation randomly popping up).
+// Returns confidence: null on any failure (network, 500, timeout) so the
+// caller can fall back to the fast translation instead of failing.
+type RefinedTranslationResult = {
   confidence: number | null;
   translation?: string;
   retried?: boolean;
 };
 
-const fetchConfidenceInBackground = async (
+const fetchRefinedTranslation = async (
   text: string,
   sourceLang: string,
   targetLang: string,
   translation: string,
   gender: 'm' | 'f',
-): Promise<BackgroundConfidenceResult> => {
+): Promise<RefinedTranslationResult> => {
   try {
     const response = await fetchWithTimeout(
       `${getBackendUrl()}/confidence`,
@@ -663,7 +665,7 @@ interface UiStrings {
   translationFailed: (err: string) => string;
   ttsFailed: (err: string) => string;
   lowConfidenceWarning: (score: string) => string;
-  translationRefined: string;
+  refiningTranslation: string;
   numeralUncertainWarning: string;
   nameUncertainWarning: string;
   flagButton: string;
@@ -775,7 +777,7 @@ const UI_STRINGS: Record<UiLang, UiStrings> = {
     translationFailed: err => `Translation failed: ${err}`,
     ttsFailed: err => `TTS failed: ${err}`,
     lowConfidenceWarning: score => `This translation scored low-confidence (${score}) - please double check it.`,
-    translationRefined: 'Translation refined for accuracy.',
+    refiningTranslation: 'Refining the translation...',
     numeralUncertainWarning: 'A number in your speech may have been misheard - please double check it.',
     nameUncertainWarning: 'A name in this translation may be missing - please double check it.',
     flagButton: 'Report this translation',
@@ -885,7 +887,7 @@ const UI_STRINGS: Record<UiLang, UiStrings> = {
     translationFailed: err => `ਅਨੁਵਾਦ ਅਸਫਲ: ${err}`,
     ttsFailed: err => `TTS ਅਸਫਲ: ${err}`,
     lowConfidenceWarning: score => `ਇਸ ਅਨੁਵਾਦ ਦਾ ਭਰੋਸਾ ਘੱਟ ਹੈ (${score}) - ਕਿਰਪਾ ਕਰਕੇ ਦੁਬਾਰਾ ਜਾਂਚ ਕਰੋ।`,
-    translationRefined: 'ਸ਼ੁੱਧਤਾ ਲਈ ਅਨੁਵਾਦ ਨੂੰ ਸੁਧਾਰਿਆ ਗਿਆ।',
+    refiningTranslation: 'ਅਨੁਵਾਦ ਨੂੰ ਸੁਧਾਰਿਆ ਜਾ ਰਿਹਾ ਹੈ...',
     numeralUncertainWarning: 'ਤੁਹਾਡੀ ਬੋਲੀ ਵਿੱਚ ਕੋਈ ਨੰਬਰ ਗਲਤ ਸੁਣਿਆ ਹੋ ਸਕਦਾ ਹੈ - ਕਿਰਪਾ ਕਰਕੇ ਦੁਬਾਰਾ ਜਾਂਚ ਕਰੋ।',
     nameUncertainWarning: 'ਇਸ ਅਨੁਵਾਦ ਵਿੱਚ ਕੋਈ ਨਾਮ ਗੁੰਮ ਹੋ ਸਕਦਾ ਹੈ - ਕਿਰਪਾ ਕਰਕੇ ਦੁਬਾਰਾ ਜਾਂਚ ਕਰੋ।',
     flagButton: 'ਇਸ ਅਨੁਵਾਦ ਦੀ ਰਿਪੋਰਟ ਕਰੋ',
@@ -1656,22 +1658,29 @@ const TranslationAppMobile = (): JSX.Element => {
 
       setStatus(T.translating(LANGUAGE_NAMES[sourceLang], LANGUAGE_NAMES[targetLang]));
 
-      // verify=true would also ask the backend to translate the result back
-      // to the source language and score word overlap, but that roughly
-      // doubles (or, with ensemble retries on a low-confidence score, can
-      // triple/quadruple) translation time on this CPU-only backend - see
-      // AI_BACKEND_TRANSLATE_TIMEOUT_MS above. Real users felt this latency
-      // directly (18-27s per translation on a physical device), so the
-      // real-time voice/text flow uses the fast single-pass path here and
-      // scores confidence separately afterwards (see fetchConfidenceInBackground
-      // below) instead of paying for it up front.
-      const {translation: translated, nameUncertain} = await translateLocalAI(
+      // Fast single-pass translation (verify=false) - the slower checks
+      // run in the /confidence call below instead (see
+      // fetchRefinedTranslation).
+      const {translation: fastTranslation, nameUncertain} = await translateLocalAI(
         text,
         sourceLang,
         targetLang,
         false,
         speakerGender,
       );
+
+      // Wait for the refine step (ensemble retry / Google fallback / Gemma
+      // grammar correction) BEFORE showing or speaking anything, so only
+      // the final translation ever appears (user request 2026-11-27 - see
+      // fetchRefinedTranslation). Falls back to the fast translation if
+      // the refine call fails or times out.
+      setStatus(T.refiningTranslation);
+      const refined = await fetchRefinedTranslation(text, sourceLang, targetLang, fastTranslation, speakerGender);
+      if (translationRequestIdRef.current !== requestId) {
+        // A newer translation started while this one was being refined.
+        return;
+      }
+      const translated = refined.retried && refined.translation ? refined.translation : fastTranslation;
 
       setTranslatedText(translated);
       setStatus(T.speaking(LANGUAGE_NAMES[targetLang]));
@@ -1681,40 +1690,17 @@ const TranslationAppMobile = (): JSX.Element => {
 
       // A flagged numeral takes priority - it's a more specific, more
       // reliable signal (see punjabi_numerals.py's detect_unreliable_numeral)
-      // than the round-trip confidence check, and is already known without
-      // another network round trip. A dropped name is the next most
-      // specific signal (see punjabi_name_corrections.py's
+      // than the round-trip confidence check. A dropped name is the next
+      // most specific signal (see punjabi_name_corrections.py's
       // detect_dropped_names), checked before falling back to the generic
-      // round-trip confidence score.
+      // round-trip confidence score of the final translation.
       if (numeralUncertain) {
         setStatus(T.numeralUncertainWarning);
       } else if (nameUncertain) {
         setStatus(T.nameUncertainWarning);
-      } else {
-        // Fire-and-forget: score (and possibly improve, via ensemble
-        // re-decoding) round-trip confidence in the background so the
-        // real-time flow's latency is unaffected (see /confidence's
-        // docstring). Guarded by requestId so a slow response can't stomp
-        // a newer translation's text/status once the user has moved on.
-        fetchConfidenceInBackground(text, sourceLang, targetLang, translated, speakerGender).then(result => {
-          if (translationRequestIdRef.current !== requestId) {
-            return;
-          }
-          if (result.retried && result.translation && result.translation !== translated) {
-            console.log('Background ensemble retry improved translation:', translated, '->', result.translation);
-            setTranslatedText(result.translation);
-            setStatus(T.translationRefined);
-            speakTranslation(result.translation, targetLang).catch(() => {
-              // Non-fatal: the corrected text is already on screen even if
-              // re-speaking it fails.
-            });
-            return;
-          }
-          if (result.confidence !== null && result.confidence < 0.5) {
-            console.log(`Low-confidence translation (score: ${result.confidence}):`, text, '->', translated);
-            setStatus(T.lowConfidenceWarning(String(result.confidence)));
-          }
-        });
+      } else if (refined.confidence !== null && refined.confidence < 0.5) {
+        console.log(`Low-confidence translation (score: ${refined.confidence}):`, text, '->', translated);
+        setStatus(T.lowConfidenceWarning(String(refined.confidence)));
       }
 
     } catch (error) {
